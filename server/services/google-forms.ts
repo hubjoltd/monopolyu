@@ -119,96 +119,133 @@ export async function submitToForm(
     await tempPage.screenshot({ path: '/tmp/form-structure.png', fullPage: true });
     console.log('Form screenshot saved to /tmp/form-structure.png');
     
-    // Debug: Print all visible inputs with more detail
+    // Debug: Print detailed form structure analysis
     const debugInfo = await tempPage.evaluate(() => {
       const allInputs = document.querySelectorAll('input, textarea, select');
-      const info = {
-        totalInputs: allInputs.length,
-        visibleInputs: 0,
-        entryInputs: 0,
-        visibleSamples: [] as string[]
-      };
+      const entryFields: any[] = [];
       
       allInputs.forEach((input) => {
-        const type = input.getAttribute('type');
         const name = input.getAttribute('name');
-        const ariaLabel = input.getAttribute('aria-label');
-        const dataInitialValue = input.getAttribute('data-initial-value');
-        const jsname = input.getAttribute('jsname');
-        
-        if (type !== 'hidden') {
-          info.visibleInputs++;
-          if (info.visibleSamples.length < 5) {
-            info.visibleSamples.push(
-              `${input.tagName.toLowerCase()} type="${type}" aria-label="${ariaLabel}" jsname="${jsname}"`
-            );
-          }
-        }
-        
         if (name && name.startsWith('entry.')) {
-          info.entryInputs++;
+          const ariaLabel = input.getAttribute('aria-label');
+          const ariaLabelledBy = input.getAttribute('aria-labelledby');
+          
+          let detectedLabel = '';
+          
+          // Try aria-labelledby
+          if (ariaLabelledBy) {
+            const labelEl = document.getElementById(ariaLabelledBy);
+            if (labelEl) detectedLabel = labelEl.textContent?.trim() || '';
+          }
+          
+          // Try finding parent question container
+          if (!detectedLabel) {
+            let parent = input.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const heading = parent.querySelector('[role="heading"]');
+              if (heading?.textContent?.trim()) {
+                detectedLabel = heading.textContent.trim();
+                break;
+              }
+              parent = parent.parentElement;
+            }
+          }
+          
+          entryFields.push({
+            name,
+            ariaLabel,
+            ariaLabelledBy,
+            detectedLabel
+          });
         }
       });
       
-      return info;
+      return {
+        totalEntryFields: entryFields.length,
+        fields: entryFields
+      };
     });
-    console.log('Form debug info:', JSON.stringify(debugInfo, null, 2));
+    console.log('\n=== Form Structure Debug ===');
+    console.log(JSON.stringify(debugInfo, null, 2));
+    console.log('===========================\n');
     
     // Extract form fields - find all inputs with entry.XXX names
     const formFields = await tempPage.evaluate(() => {
       const fields: Array<{ selector: string; label: string; type: string; entryId: string }> = [];
       
-      // Method 1: Find all inputs with name starting with "entry."
+      // Find all inputs with name starting with "entry."
       const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
       
       entryInputs.forEach((input) => {
         const entryId = input.getAttribute('name') || '';
-        const ariaLabel = input.getAttribute('aria-label');
         
-        // Try to find the question label by multiple methods
-        let questionText = ariaLabel || '';
+        // Skip sentinel fields (these are not actual questions)
+        if (entryId.includes('_sentinel')) {
+          return;
+        }
         
+        let questionText = '';
+        
+        // Method 1: Use aria-labelledby to find the label
+        const ariaLabelledBy = input.getAttribute('aria-labelledby');
+        if (ariaLabelledBy) {
+          const labelElement = document.getElementById(ariaLabelledBy);
+          if (labelElement) {
+            questionText = labelElement.textContent?.trim() || '';
+          }
+        }
+        
+        // Method 2: Use aria-label attribute
+        if (!questionText) {
+          const ariaLabel = input.getAttribute('aria-label');
+          if (ariaLabel && ariaLabel !== 'null' && ariaLabel.length > 1) {
+            questionText = ariaLabel;
+          }
+        }
+        
+        // Method 3: Find question container by walking up the DOM
         if (!questionText) {
           let parent = input.parentElement;
           
-          // Walk up to find the question container
-          for (let i = 0; i < 10 && parent; i++) {
-            // Look for elements with role="heading" or containing question text
-            const heading = parent.querySelector('[role="heading"]');
-            if (heading) {
-              questionText = heading.textContent?.trim() || '';
-              break;
-            }
-            
-            // Look for span with specific classes that contain questions
-            const questionSpan = parent.querySelector('span[dir="auto"]');
-            if (questionSpan && questionSpan.textContent && questionSpan.textContent.length > 3) {
-              questionText = questionSpan.textContent.trim();
-              break;
-            }
-            
-            // Look for data-params or aria-label
-            const paramEl = parent.querySelector('[data-params]');
-            if (paramEl) {
-              const params = paramEl.getAttribute('data-params');
-              if (params) {
-                try {
-                  const parsed = JSON.parse(params);
-                  if (parsed && parsed[1]) questionText = parsed[1];
-                } catch (e) {}
+          for (let i = 0; i < 15 && parent; i++) {
+            // Look for the question div (usually has specific data attributes)
+            const questionDiv = parent.querySelector('[data-item-id], [jsname="wSASue"]');
+            if (questionDiv) {
+              // Find heading or label within question container
+              const heading = questionDiv.querySelector('[role="heading"]');
+              if (heading && heading.textContent) {
+                questionText = heading.textContent.trim();
+                break;
               }
+              
+              // Look for M7eMe class which contains question text
+              const questionLabel = questionDiv.querySelector('.M7eMe, .freebirdFormviewerComponentsQuestionBaseTitle');
+              if (questionLabel && questionLabel.textContent) {
+                questionText = questionLabel.textContent.trim();
+                break;
+              }
+            }
+            
+            // Look for any text content in parent with specific pattern
+            const textContent = parent.textContent || '';
+            const lines = textContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            
+            // If we find a short text line before the input, it might be the question
+            if (lines.length > 0 && lines[0].length > 2 && lines[0].length < 200) {
+              questionText = lines[0];
+              break;
             }
             
             parent = parent.parentElement;
           }
         }
         
-        if (entryId) {
+        if (entryId && questionText) {
           const selector = `[name="${entryId}"]`;
           const type = input.tagName.toLowerCase();
           fields.push({ 
             selector, 
-            label: questionText || `Field ${entryId}`, 
+            label: questionText, 
             type, 
             entryId 
           });
