@@ -356,26 +356,118 @@ export async function submitToForm(
             const cleanValue = String(value).trim();
             
             try {
-              // Use the selector to find the visible input field
               await page.waitForSelector(fieldSelector, { timeout: 5000 });
               
-              // Clear existing value and fill new value
-              await page.evaluate((selector) => {
-                const element = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
-                if (element) {
-                  element.value = '';
-                }
+              // Detect field type and fill accordingly
+              const fieldType = await page.evaluate((selector) => {
+                const element = document.querySelector(selector);
+                if (!element) return null;
+                return {
+                  tagName: element.tagName.toLowerCase(),
+                  type: element.getAttribute('type'),
+                  role: element.getAttribute('role')
+                };
               }, fieldSelector);
               
-              await page.type(fieldSelector, cleanValue, { delay: 50 });
-              fieldsFilled++;
+              if (!fieldType) {
+                if (i === 0) console.log(`  ✗ Field not found: "${columnName}"`);
+                continue;
+              }
               
-              if (i === 0) {
-                console.log(`  ✓ Filled "${columnName}" = "${cleanValue}"`);
+              // Handle different input types
+              if (fieldType.tagName === 'select') {
+                // Dropdown - select by visible text or value
+                const selected = await page.evaluate((selector, value) => {
+                  const select = document.querySelector(selector) as HTMLSelectElement;
+                  if (!select) return false;
+                  
+                  // Try to find option by text content
+                  const options = Array.from(select.options);
+                  const option = options.find(opt => 
+                    opt.textContent?.trim().toLowerCase() === value.toLowerCase() ||
+                    opt.value.toLowerCase() === value.toLowerCase()
+                  );
+                  
+                  if (option) {
+                    select.value = option.value;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                  }
+                  return false;
+                }, fieldSelector, cleanValue);
+                
+                if (selected) {
+                  fieldsFilled++;
+                  if (i === 0) console.log(`  ✓ Selected "${columnName}" = "${cleanValue}"`);
+                } else if (i === 0) {
+                  console.log(`  ✗ Could not find option "${cleanValue}" for "${columnName}"`);
+                }
+              } else if (fieldType.type === 'radio' || fieldType.role === 'radio') {
+                // Radio button - find and click the one with matching label
+                const clicked = await page.evaluate((selector, value) => {
+                  const input = document.querySelector(selector) as HTMLInputElement;
+                  if (!input) return false;
+                  
+                  // Get the entry name (without _sentinel)
+                  const entryName = input.name.replace('_sentinel', '');
+                  
+                  // Find all radios with this entry name
+                  const radios = Array.from(document.querySelectorAll(`[name="${entryName}"]`)) as HTMLInputElement[];
+                  
+                  for (const radio of radios) {
+                    // Find associated label
+                    let labelText = '';
+                    const ariaLabel = radio.getAttribute('aria-label');
+                    if (ariaLabel) labelText = ariaLabel;
+                    
+                    if (!labelText && radio.id) {
+                      const label = document.querySelector(`label[for="${radio.id}"]`);
+                      if (label) labelText = label.textContent?.trim() || '';
+                    }
+                    
+                    if (!labelText) {
+                      const parent = radio.closest('[role="radiogroup"], [role="radio"]')?.parentElement;
+                      if (parent) labelText = parent.textContent?.trim() || '';
+                    }
+                    
+                    if (labelText.toLowerCase().includes(value.toLowerCase()) || 
+                        value.toLowerCase().includes(labelText.toLowerCase())) {
+                      radio.click();
+                      return true;
+                    }
+                  }
+                  return false;
+                }, fieldSelector, cleanValue);
+                
+                if (clicked) {
+                  fieldsFilled++;
+                  if (i === 0) console.log(`  ✓ Clicked radio "${columnName}" = "${cleanValue}"`);
+                } else if (i === 0) {
+                  console.log(`  ✗ Could not find radio option "${cleanValue}" for "${columnName}"`);
+                }
+              } else if (fieldType.type === 'checkbox') {
+                // Checkbox - check if value indicates it should be checked
+                const shouldCheck = ['yes', 'true', '1', 'checked', cleanValue.toLowerCase()].includes(cleanValue.toLowerCase());
+                if (shouldCheck) {
+                  await page.click(fieldSelector);
+                  fieldsFilled++;
+                  if (i === 0) console.log(`  ✓ Checked "${columnName}"`);
+                }
+              } else {
+                // Text input or textarea
+                await page.evaluate((selector) => {
+                  const element = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
+                  if (element) element.value = '';
+                }, fieldSelector);
+                
+                await page.type(fieldSelector, cleanValue, { delay: 30 });
+                fieldsFilled++;
+                
+                if (i === 0) console.log(`  ✓ Filled "${columnName}" = "${cleanValue}"`);
               }
             } catch (selectorError) {
               if (i === 0) {
-                console.log(`  ✗ Could not find field for column "${columnName}"`);
+                console.log(`  ✗ Error filling "${columnName}": ${selectorError}`);
               }
             }
           }
