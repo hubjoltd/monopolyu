@@ -1,5 +1,8 @@
-import { type Submission, type InsertSubmission, type Batch, type InsertBatch } from "@shared/schema";
+import { type Submission, type InsertSubmission, type Batch, type InsertBatch, submissions, batches } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { drizzle } from 'drizzle-orm/neon-http';
+import { neon } from '@neondatabase/serverless';
+import { eq } from 'drizzle-orm';
 
 export interface IStorage {
   // Submission methods
@@ -92,4 +95,72 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+export class DbStorage implements IStorage {
+  private db;
+
+  constructor() {
+    if (!process.env.DATABASE_URL) {
+      throw new Error("DATABASE_URL is not set");
+    }
+    const sql = neon(process.env.DATABASE_URL);
+    this.db = drizzle(sql);
+  }
+
+  async createSubmission(insertSubmission: InsertSubmission): Promise<Submission> {
+    const [submission] = await this.db
+      .insert(submissions)
+      .values({
+        ...insertSubmission,
+        data: insertSubmission.data as any,
+      })
+      .returning();
+    return submission;
+  }
+
+  async getSubmission(id: string): Promise<Submission | undefined> {
+    const [submission] = await this.db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.id, id));
+    return submission;
+  }
+
+  async updateSubmissionStatus(id: string, status: string): Promise<void> {
+    await this.db
+      .update(submissions)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(submissions.id, id));
+  }
+
+  async updateSubmissionProgress(id: string, processedRecords: number): Promise<void> {
+    await this.db
+      .update(submissions)
+      .set({ processedRecords, updatedAt: new Date() })
+      .where(eq(submissions.id, id));
+  }
+
+  async createBatch(insertBatch: InsertBatch): Promise<Batch> {
+    const [batch] = await this.db
+      .insert(batches)
+      .values(insertBatch)
+      .returning();
+    return batch;
+  }
+
+  async updateBatchStatus(id: string, status: string, errorMessage?: string): Promise<void> {
+    const updateData: any = { status };
+    if (errorMessage !== undefined) {
+      updateData.errorMessage = errorMessage;
+    }
+    if (status === 'completed' || status === 'failed') {
+      updateData.completedAt = new Date();
+    }
+    
+    await this.db
+      .update(batches)
+      .set(updateData)
+      .where(eq(batches.id, id));
+  }
+}
+
+export const storage = process.env.DATABASE_URL ? new DbStorage() : new MemStorage();
