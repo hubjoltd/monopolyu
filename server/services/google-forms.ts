@@ -115,6 +115,24 @@ export async function submitToForm(
     const tempPage = await browser.newPage();
     await tempPage.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
+    // Save screenshot for debugging
+    await tempPage.screenshot({ path: '/tmp/form-structure.png', fullPage: true });
+    console.log('Form screenshot saved to /tmp/form-structure.png');
+    
+    // Debug: Print HTML structure around first input
+    const debugHtml = await tempPage.evaluate(() => {
+      const firstInput = document.querySelector('input[name^="entry."]');
+      if (firstInput) {
+        let container = firstInput;
+        for (let i = 0; i < 3; i++) {
+          container = container.parentElement || container;
+        }
+        return container.outerHTML.substring(0, 1000);
+      }
+      return 'No input found';
+    });
+    console.log('Sample HTML structure:', debugHtml);
+    
     // Extract all form fields and their entry IDs with labels
     const formFields = await tempPage.evaluate(() => {
       const fields: Array<{ entryId: string; label: string; type: string }> = [];
