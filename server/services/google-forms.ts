@@ -120,11 +120,11 @@ export async function submitToForm(
       const fields: Array<{ entryId: string; label: string; type: string }> = [];
       
       // Find all input and textarea elements with entry IDs
-      const inputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."]');
+      const inputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
       
       inputs.forEach((input) => {
         const entryId = input.getAttribute('name');
-        if (!entryId) return;
+        if (!entryId || entryId.includes('_sentinel')) return;
         
         // Try to find the label/question text
         let label = '';
@@ -132,29 +132,53 @@ export async function submitToForm(
         // Method 1: Look for aria-label
         label = input.getAttribute('aria-label') || '';
         
-        // Method 2: Look for parent div containing question text
+        // Method 2: Look for data-label attribute
+        if (!label) {
+          label = input.getAttribute('data-label') || '';
+        }
+        
+        // Method 3: Look for parent div containing question text
         if (!label) {
           const questionDiv = input.closest('[role="listitem"]');
           if (questionDiv) {
+            // Try to find heading
             const labelElement = questionDiv.querySelector('[role="heading"]');
             if (labelElement) {
               label = labelElement.textContent?.trim() || '';
             }
+            
+            // If still no label, look for any div with class containing "question"
+            if (!label) {
+              const questionDivs = questionDiv.querySelectorAll('div[class*="question"], div[class*="Question"]');
+              for (const div of Array.from(questionDivs)) {
+                const text = div.textContent?.trim();
+                if (text && text.length > 2 && text.length < 200 && !text.includes('*')) {
+                  label = text;
+                  break;
+                }
+              }
+            }
           }
         }
         
-        // Method 3: Look for any nearby text content
+        // Method 4: Walk up the DOM tree looking for question text
         if (!label) {
-          const parent = input.closest('div[data-params]');
-          if (parent) {
-            const textElements = Array.from(parent.querySelectorAll('span'));
-            for (const span of textElements) {
+          let parent = input.parentElement;
+          let depth = 0;
+          while (parent && depth < 5) {
+            const spans = Array.from(parent.querySelectorAll('span'));
+            for (const span of spans) {
               const text = span.textContent?.trim();
-              if (text && text.length > 2 && text.length < 200) {
+              // Look for text that seems like a question (reasonable length, not a placeholder)
+              if (text && text.length > 2 && text.length < 200 && 
+                  !text.match(/^(submit|clear|next|previous)$/i)) {
                 label = text;
                 break;
               }
             }
+            if (label) break;
+            parent = parent.parentElement;
+            depth++;
           }
         }
         
