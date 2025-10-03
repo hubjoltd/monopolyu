@@ -241,35 +241,72 @@ export async function submitToForm(
           continue;
         }
 
-        // Click submit button - try multiple selectors
+        // Click submit button - try multiple approaches
         let submitClicked = false;
-        const submitSelectors = [
-          '[type="submit"]',
-          'div[role="button"][jsname*="submit"]',
-          'span:has-text("Submit")',
-          'div[role="button"]:has-text("Submit")',
-          '.freebirdFormviewerViewNavigationSubmitButton'
-        ];
         
-        for (const selector of submitSelectors) {
-          try {
-            const element = await page.$(selector);
-            if (element) {
-              await element.click();
-              submitClicked = true;
-              if (i === 0) {
-                console.log(`  Clicked submit using selector: ${selector}`);
-              }
-              break;
-            }
-          } catch (e) {
-            continue;
+        try {
+          // Method 1: Try standard submit button
+          const submitButton = await page.$('[type="submit"]');
+          if (submitButton) {
+            await submitButton.click();
+            submitClicked = true;
+            if (i === 0) console.log(`  Clicked submit: [type="submit"]`);
           }
+        } catch (e) {}
+        
+        if (!submitClicked) {
+          try {
+            // Method 2: Look for div with role="button" containing "Submit" text
+            const buttons = await page.$$('div[role="button"]');
+            for (const button of buttons) {
+              const text = await page.evaluate(el => el.textContent, button);
+              if (text && text.toLowerCase().includes('submit')) {
+                await button.click();
+                submitClicked = true;
+                if (i === 0) console.log(`  Clicked submit: div[role="button"] with "Submit" text`);
+                break;
+              }
+            }
+          } catch (e) {}
+        }
+        
+        if (!submitClicked) {
+          try {
+            // Method 3: Click via JavaScript evaluation
+            submitClicked = await page.evaluate(() => {
+              const elements = Array.from(document.querySelectorAll('span, div[role="button"]'));
+              for (const el of elements) {
+                if (el.textContent?.toLowerCase().includes('submit')) {
+                  (el as HTMLElement).click();
+                  return true;
+                }
+              }
+              return false;
+            });
+            if (submitClicked && i === 0) console.log(`  Clicked submit: JavaScript evaluate`);
+          } catch (e) {}
+        }
+        
+        if (!submitClicked) {
+          try {
+            // Method 4: Try Google Forms specific class
+            const gfButton = await page.$('.freebirdFormviewerViewNavigationSubmitButton');
+            if (gfButton) {
+              await gfButton.click();
+              submitClicked = true;
+              if (i === 0) console.log(`  Clicked submit: Google Forms class`);
+            }
+          } catch (e) {}
         }
         
         if (!submitClicked) {
           errors.push(`Row ${i + 1}: Could not find submit button`);
           failCount++;
+          if (i === 0) {
+            // Take screenshot to debug
+            await page.screenshot({ path: '/tmp/form-debug.png' });
+            console.log(`  Screenshot saved to /tmp/form-debug.png for debugging`);
+          }
           await page.close();
           continue;
         }
