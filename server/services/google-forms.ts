@@ -454,16 +454,33 @@ export async function submitToForm(
                   if (i === 0) console.log(`  ✓ Checked "${columnName}"`);
                 }
               } else {
-                // Text input or textarea
-                await page.evaluate((selector) => {
+                // Text input or textarea - use direct value assignment with proper events
+                const filled = await page.evaluate((selector, value) => {
                   const element = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
-                  if (element) element.value = '';
-                }, fieldSelector);
+                  if (!element) return false;
+                  
+                  // Focus the element first
+                  element.focus();
+                  
+                  // Clear and set value
+                  element.value = '';
+                  element.value = value;
+                  
+                  // Trigger all necessary events for Google Forms to recognize the input
+                  element.dispatchEvent(new Event('input', { bubbles: true }));
+                  element.dispatchEvent(new Event('change', { bubbles: true }));
+                  element.dispatchEvent(new Event('blur', { bubbles: true }));
+                  
+                  // Verify value was set
+                  return element.value === value;
+                }, fieldSelector, cleanValue);
                 
-                await page.type(fieldSelector, cleanValue, { delay: 30 });
-                fieldsFilled++;
-                
-                if (i === 0) console.log(`  ✓ Filled "${columnName}" = "${cleanValue}"`);
+                if (filled) {
+                  fieldsFilled++;
+                  if (i === 0) console.log(`  ✓ Filled "${columnName}" = "${cleanValue}"`);
+                } else if (i === 0) {
+                  console.log(`  ✗ Failed to fill "${columnName}"`);
+                }
               }
             } catch (selectorError) {
               if (i === 0) {
@@ -479,6 +496,9 @@ export async function submitToForm(
           await page.close();
           continue;
         }
+
+        // Wait for Google Forms to process all inputs
+        await new Promise(resolve => setTimeout(resolve, 500));
 
         // Click submit button - try multiple approaches
         let submitClicked = false;
