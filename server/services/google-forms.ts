@@ -1,3 +1,5 @@
+import puppeteer from 'puppeteer';
+
 interface FormField {
   title: string;
   type: string;
@@ -83,6 +85,8 @@ export async function submitToForm(
   data: Record<string, any>[],
   mappings?: Record<string, FormFieldMapping>
 ): Promise<void> {
+  let browser;
+  
   try {
     // Extract form ID from URL
     const formIdMatch = formUrl.match(/\/forms\/d\/e\/([a-zA-Z0-9-_]+)/);
@@ -93,7 +97,6 @@ export async function submitToForm(
     const formId = formIdMatch[1];
 
     // Configured mappings for your Google Form
-    // Entry IDs extracted from: https://docs.google.com/forms/d/e/1FAIpQLSfNE-teKY-YcBFw8crhN2ToUaNvomUXpKvYvXwHU9nwUViG3Q/viewform
     const defaultMappings: Record<string, FormFieldMapping> = {
       gmail: {
         entryId: 'entry.517524020',
@@ -128,25 +131,14 @@ export async function submitToForm(
     };
 
     const activeMappings = mappings || defaultMappings;
-    
-    // Check if placeholder values are still being used
-    const hasPlaceholders = Object.values(activeMappings).some(m => 
-      m.entryId.includes('PLACEHOLDER')
-    );
-    
-    if (hasPlaceholders) {
-      console.warn('⚠️  Using placeholder entry IDs! Submissions will not work.');
-      console.warn('To fix this:');
-      console.warn('1. Open your Google Form');
-      console.warn('2. Click 3-dot menu → "Get pre-filled link"');
-      console.warn('3. Fill sample data and click "Get link"');
-      console.warn('4. Extract entry.XXXXX values from the URL');
-      console.warn('5. Update the mappings in server/services/google-forms.ts');
-      
-      throw new Error('Form field mappings not configured. See console for instructions.');
-    }
 
-    console.log(`Submitting ${data.length} records to form ${formId}`);
+    console.log(`Submitting ${data.length} records using browser automation...`);
+
+    // Launch Puppeteer browser
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
 
     let successCount = 0;
     let failCount = 0;
@@ -154,93 +146,72 @@ export async function submitToForm(
 
     for (let i = 0; i < data.length; i++) {
       const record = data[i];
+      const page = await browser.newPage();
       
       try {
-        const formData = new URLSearchParams();
-        let fieldCount = 0;
+        // Navigate to the form
+        await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-        // Map spreadsheet columns to form entry IDs
+        let fieldsFilled = 0;
+
+        // Fill each field based on entry IDs
         for (const [columnName, value] of Object.entries(record)) {
           const entryId = findMatchingEntryId(columnName, activeMappings);
           
           if (entryId && value !== null && value !== undefined && value !== '') {
-            // Trim whitespace from values
             const cleanValue = String(value).trim();
-            formData.append(entryId, cleanValue);
-            fieldCount++;
+            
+            try {
+              // Try different selectors for the input
+              const selector = `input[name="${entryId}"], textarea[name="${entryId}"]`;
+              await page.waitForSelector(selector, { timeout: 5000 });
+              await page.type(selector, cleanValue);
+              fieldsFilled++;
+              
+              if (i === 0) {
+                console.log(`  Filled ${entryId} = "${cleanValue}"`);
+              }
+            } catch (selectorError) {
+              if (i === 0) {
+                console.log(`  Could not find field ${entryId} for column "${columnName}"`);
+              }
+            }
           }
         }
 
-        if (fieldCount === 0) {
-          errors.push(`Row ${i + 1}: No matching fields found for columns: ${Object.keys(record).join(', ')}`);
+        if (fieldsFilled === 0) {
+          errors.push(`Row ${i + 1}: No fields were filled`);
           failCount++;
+          await page.close();
           continue;
         }
 
-        // Add common Google Forms hidden parameters
-        formData.append('fvv', '1');
-        formData.append('pageHistory', '0');
-        formData.append('fbzx', Date.now().toString());
-
-        // Log first submission for debugging
-        if (i === 0) {
-          console.log('First submission data:', Object.fromEntries(formData.entries()));
-        }
-
-        // Submit to Google Forms
-        const submitUrl = `https://docs.google.com/forms/d/e/${formId}/formResponse`;
+        // Click submit button
+        await page.click('[type="submit"]');
         
-        const response = await fetch(submitUrl, {
-          method: 'POST',
-          body: formData,
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Origin': 'https://docs.google.com',
-            'Referer': `https://docs.google.com/forms/d/e/${formId}/viewform`,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9'
-          },
-          redirect: 'manual'
-        });
+        // Wait for submission to complete
+        await page.waitForNavigation({ timeout: 10000 }).catch(() => {});
         
-        // Log first response for debugging
-        if (i === 0) {
-          console.log('First response status:', response.status);
-          const responseText = await response.text();
-          
-          // Try to extract error message from HTML
-          const errorMatch = responseText.match(/<div[^>]*class="[^"]*error[^"]*"[^>]*>([^<]+)<\/div>/i);
-          const warningMatch = responseText.match(/This form can only be viewed by users in the owner/i);
-          const invalidMatch = responseText.match(/invalid/i);
-          
-          if (errorMatch) {
-            console.log('Error message found:', errorMatch[1]);
-          }
-          if (warningMatch) {
-            console.log('⚠️  Form has restricted access - it may need to be publicly accessible');
-          }
-          if (invalidMatch) {
-            console.log('⚠️  Response contains "invalid" - field values may not match form options');
-          }
-          
-          console.log('Response snippet:', responseText.substring(0, 500));
-        }
-
-        // Google Forms returns 302/303 on successful submission
-        if (response.status === 302 || response.status === 303 || response.status === 200) {
+        // Check if we reached the confirmation page
+        const url = page.url();
+        if (url.includes('/formResponse') || url.includes('submitted')) {
           successCount++;
         } else {
-          errors.push(`Row ${i + 1}: Unexpected status ${response.status}`);
+          errors.push(`Row ${i + 1}: Form did not confirm submission`);
           failCount++;
         }
 
-        // Rate limiting: 100-150ms between submissions
-        await new Promise(resolve => setTimeout(resolve, 120));
+        await page.close();
+
+        // Rate limiting
+        if (i < data.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
         
       } catch (recordError: any) {
         errors.push(`Row ${i + 1}: ${recordError.message}`);
         failCount++;
+        await page.close().catch(() => {});
       }
     }
 
@@ -251,11 +222,15 @@ export async function submitToForm(
     }
     
     if (successCount === 0 && data.length > 0) {
-      throw new Error(`No records were successfully submitted. ${errors[0] || 'Please check the configuration.'}`);
+      throw new Error(`No records were successfully submitted. ${errors[0] || 'Browser automation failed.'}`);
     }
     
   } catch (error: any) {
     console.error("Form submission error:", error);
     throw new Error(`Failed to submit to form: ${error.message}`);
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 }
