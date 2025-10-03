@@ -159,32 +159,48 @@ export async function submitToForm(
       const fields: Array<{ selector: string; label: string; type: string; entryId: string }> = [];
       
       // Method 1: Find all inputs with name starting with "entry."
-      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."]');
+      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
       
       entryInputs.forEach((input) => {
         const entryId = input.getAttribute('name') || '';
+        const ariaLabel = input.getAttribute('aria-label');
         
-        // Try to find the question label by traversing up the DOM
-        let questionText = '';
-        let parent = input.parentElement;
+        // Try to find the question label by multiple methods
+        let questionText = ariaLabel || '';
         
-        // Walk up to find the question container
-        for (let i = 0; i < 10 && parent; i++) {
-          // Look for elements with role="heading" or containing question text
-          const heading = parent.querySelector('[role="heading"]');
-          if (heading) {
-            questionText = heading.textContent?.trim() || '';
-            break;
-          }
+        if (!questionText) {
+          let parent = input.parentElement;
           
-          // Look for span with specific classes that contain questions
-          const questionSpan = parent.querySelector('span[dir="auto"]');
-          if (questionSpan && questionSpan.textContent && questionSpan.textContent.length > 3) {
-            questionText = questionSpan.textContent.trim();
-            break;
+          // Walk up to find the question container
+          for (let i = 0; i < 10 && parent; i++) {
+            // Look for elements with role="heading" or containing question text
+            const heading = parent.querySelector('[role="heading"]');
+            if (heading) {
+              questionText = heading.textContent?.trim() || '';
+              break;
+            }
+            
+            // Look for span with specific classes that contain questions
+            const questionSpan = parent.querySelector('span[dir="auto"]');
+            if (questionSpan && questionSpan.textContent && questionSpan.textContent.length > 3) {
+              questionText = questionSpan.textContent.trim();
+              break;
+            }
+            
+            // Look for data-params or aria-label
+            const paramEl = parent.querySelector('[data-params]');
+            if (paramEl) {
+              const params = paramEl.getAttribute('data-params');
+              if (params) {
+                try {
+                  const parsed = JSON.parse(params);
+                  if (parsed && parsed[1]) questionText = parsed[1];
+                } catch (e) {}
+              }
+            }
+            
+            parent = parent.parentElement;
           }
-          
-          parent = parent.parentElement;
         }
         
         if (entryId) {
@@ -204,10 +220,14 @@ export async function submitToForm(
     
     await tempPage.close();
     
-    console.log(`Found ${formFields.length} form fields:`);
+    console.log(`\n✓ Auto-detected ${formFields.length} form fields with entry IDs:`);
     formFields.forEach(field => {
-      console.log(`  "${field.label}" (${field.type}) - ${field.entryId || 'no entry ID'}`);
+      console.log(`  - ${field.entryId}: "${field.label}" (${field.type})`);
     });
+    
+    if (formFields.length === 0) {
+      throw new Error('No form fields with entry IDs were detected. The form may not be accessible or has a different structure.');
+    }
     
     // Create automatic mapping from form fields to spreadsheet columns
     const autoFieldMapping: Record<string, string> = {};
@@ -262,15 +282,24 @@ export async function submitToForm(
             try {
               // Use the selector to find the visible input field
               await page.waitForSelector(fieldSelector, { timeout: 5000 });
-              await page.type(fieldSelector, cleanValue);
+              
+              // Clear existing value and fill new value
+              await page.evaluate((selector) => {
+                const element = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
+                if (element) {
+                  element.value = '';
+                }
+              }, fieldSelector);
+              
+              await page.type(fieldSelector, cleanValue, { delay: 50 });
               fieldsFilled++;
               
               if (i === 0) {
-                console.log(`  Filled "${columnName}" = "${cleanValue}"`);
+                console.log(`  ✓ Filled "${columnName}" = "${cleanValue}"`);
               }
             } catch (selectorError) {
               if (i === 0) {
-                console.log(`  Could not find field for column "${columnName}"`);
+                console.log(`  ✗ Could not find field for column "${columnName}"`);
               }
             }
           }
@@ -353,31 +382,55 @@ export async function submitToForm(
           continue;
         }
         
-        // Wait for submission to complete
-        await page.waitForNavigation({ timeout: 10000 }).catch(() => {});
+        // Wait for submission to complete - try navigation first
+        const navigationPromise = page.waitForNavigation({ timeout: 15000 }).catch(() => null);
+        await navigationPromise;
         
         // Additional wait for form to process
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
         
         // Check if we reached the confirmation page
         const url = page.url();
+        let submissionConfirmed = false;
+        
         if (url.includes('/formResponse') || url.includes('submitted')) {
-          successCount++;
+          submissionConfirmed = true;
           if (i === 0) {
             console.log(`  ✓ Successfully submitted (redirected to ${url})`);
           }
         } else {
           // Check for confirmation text on page
           const bodyText = await page.evaluate(() => document.body.innerText);
-          if (bodyText.toLowerCase().includes('your response has been recorded') || 
-              bodyText.toLowerCase().includes('thank you')) {
-            successCount++;
+          const confirmationTexts = [
+            'your response has been recorded',
+            'thank you',
+            'response recorded',
+            'submitted',
+            'thanks for',
+            'we have received'
+          ];
+          
+          const hasConfirmation = confirmationTexts.some(text => 
+            bodyText.toLowerCase().includes(text)
+          );
+          
+          if (hasConfirmation) {
+            submissionConfirmed = true;
             if (i === 0) {
               console.log(`  ✓ Successfully submitted (found confirmation text)`);
             }
-          } else {
-            errors.push(`Row ${i + 1}: Form did not confirm submission (URL: ${url})`);
-            failCount++;
+          }
+        }
+        
+        if (submissionConfirmed) {
+          successCount++;
+        } else {
+          errors.push(`Row ${i + 1}: Form did not confirm submission (URL: ${url})`);
+          failCount++;
+          
+          if (i === 0) {
+            await page.screenshot({ path: '/tmp/form-no-confirmation.png' });
+            console.log(`  Screenshot saved for debugging: /tmp/form-no-confirmation.png`);
           }
         }
 

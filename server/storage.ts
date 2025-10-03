@@ -163,4 +163,6 @@ export class DbStorage implements IStorage {
   }
 }
 
-export const storage = process.env.DATABASE_URL ? new DbStorage() : new MemStorage();
+// Use in-memory storage only (no database needed)
+// Responses are stored directly in Google Form's response sheet
+export const storage = new MemStorage();
