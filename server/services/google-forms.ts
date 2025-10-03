@@ -101,7 +101,6 @@ export async function submitToForm(
     // Launch Puppeteer browser
     browser = await puppeteer.launch({
       headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -242,19 +241,65 @@ export async function submitToForm(
           continue;
         }
 
-        // Click submit button
-        await page.click('[type="submit"]');
+        // Click submit button - try multiple selectors
+        let submitClicked = false;
+        const submitSelectors = [
+          '[type="submit"]',
+          'div[role="button"][jsname*="submit"]',
+          'span:has-text("Submit")',
+          'div[role="button"]:has-text("Submit")',
+          '.freebirdFormviewerViewNavigationSubmitButton'
+        ];
+        
+        for (const selector of submitSelectors) {
+          try {
+            const element = await page.$(selector);
+            if (element) {
+              await element.click();
+              submitClicked = true;
+              if (i === 0) {
+                console.log(`  Clicked submit using selector: ${selector}`);
+              }
+              break;
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+        
+        if (!submitClicked) {
+          errors.push(`Row ${i + 1}: Could not find submit button`);
+          failCount++;
+          await page.close();
+          continue;
+        }
         
         // Wait for submission to complete
         await page.waitForNavigation({ timeout: 10000 }).catch(() => {});
+        
+        // Additional wait for form to process
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Check if we reached the confirmation page
         const url = page.url();
         if (url.includes('/formResponse') || url.includes('submitted')) {
           successCount++;
+          if (i === 0) {
+            console.log(`  ✓ Successfully submitted (redirected to ${url})`);
+          }
         } else {
-          errors.push(`Row ${i + 1}: Form did not confirm submission`);
-          failCount++;
+          // Check for confirmation text on page
+          const bodyText = await page.evaluate(() => document.body.innerText);
+          if (bodyText.toLowerCase().includes('your response has been recorded') || 
+              bodyText.toLowerCase().includes('thank you')) {
+            successCount++;
+            if (i === 0) {
+              console.log(`  ✓ Successfully submitted (found confirmation text)`);
+            }
+          } else {
+            errors.push(`Row ${i + 1}: Form did not confirm submission (URL: ${url})`);
+            failCount++;
+          }
         }
 
         await page.close();
