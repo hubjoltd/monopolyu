@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -77,29 +77,35 @@ export default function BatchControls({
     refetchInterval: 2000,
   });
 
+  const previousProcessedRef = useRef<number>(0);
+
   // Update current submission when status changes
-  if (submissionStatus && submissionStatus.id === currentSubmission?.id) {
-    if (submissionStatus !== currentSubmission) {
-      setCurrentSubmission(submissionStatus);
-      
-      // Handle batch completion
-      if (submissionStatus.status === 'processing' && 
-          (submissionStatus.processedRecords ?? 0) > (currentSubmission?.processedRecords ?? 0)) {
-        if (soundEnabled) {
-          playSuccess();
+  useEffect(() => {
+    if (submissionStatus && submissionStatus.id === currentSubmission?.id) {
+      if (submissionStatus !== currentSubmission) {
+        const previousProcessed = currentSubmission?.processedRecords ?? 0;
+        setCurrentSubmission(submissionStatus);
+        
+        // Handle batch completion
+        if (submissionStatus.status === 'processing' && 
+            (submissionStatus.processedRecords ?? 0) > previousProcessed) {
+          if (soundEnabled) {
+            playSuccess();
+          }
+          onBatchComplete();
         }
-        onBatchComplete();
-      }
-      
-      // Handle completion
-      if (submissionStatus.status === 'completed') {
-        if (soundEnabled) {
-          playSuccess();
+        
+        // Handle completion
+        if (submissionStatus.status === 'completed' && previousProcessedRef.current !== submissionStatus.processedRecords) {
+          previousProcessedRef.current = submissionStatus.processedRecords ?? 0;
+          if (soundEnabled) {
+            playSuccess();
+          }
+          onAllComplete();
         }
-        onAllComplete();
       }
     }
-  }
+  }, [submissionStatus, currentSubmission, soundEnabled, playSuccess, onBatchComplete, onAllComplete, setCurrentSubmission]);
 
   const canStart = formData && sheetData.length > 0 && !currentSubmission?.id;
   const isProcessing = currentSubmission?.status === 'processing';

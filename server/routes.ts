@@ -45,6 +45,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Fetch sheet from Google Sheets URL
+  app.post("/api/sheets/fetch", async (req, res) => {
+    try {
+      const { url } = req.body;
+      if (!url) {
+        return res.status(400).json({ message: "Sheet URL is required" });
+      }
+
+      let sheetId: string | null = null;
+      let gid = '0';
+
+      try {
+        const urlObj = new URL(url);
+        
+        // Extract sheet ID from pathname
+        // Supports: /spreadsheets/d/<id>, /spreadsheets/d/e/<pub-id>/pubhtml
+        const pathMatch = urlObj.pathname.match(/\/spreadsheets\/d\/(?:e\/)?([a-zA-Z0-9-_]+)/);
+        if (pathMatch) {
+          sheetId = pathMatch[1];
+        }
+
+        // Also support legacy open?id= format
+        if (!sheetId && urlObj.searchParams.has('id')) {
+          sheetId = urlObj.searchParams.get('id');
+        }
+
+        // Extract gid from query params first (most reliable)
+        if (urlObj.searchParams.has('gid')) {
+          gid = urlObj.searchParams.get('gid') || '0';
+        } 
+        // Then check hash for #gid=
+        else if (urlObj.hash) {
+          const hashGidMatch = urlObj.hash.match(/gid=([0-9]+)/);
+          if (hashGidMatch) {
+            gid = hashGidMatch[1];
+          }
+        }
+      } catch (e) {
+        throw new Error("Invalid URL format");
+      }
+
+      if (!sheetId) {
+        return res.status(400).json({ message: "Could not extract sheet ID from URL" });
+      }
+
+      // Construct clean CSV export URL
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+
+      // Fetch the CSV data
+      const response = await fetch(csvUrl);
+      if (!response.ok) {
+        throw new Error("Failed to fetch sheet. Make sure it's shared as 'Anyone with the link can view'");
+      }
+
+      const csvData = await response.text();
+      const buffer = Buffer.from(csvData, 'utf-8');
+
+      // Create a mock file object to reuse the parseSheet function
+      const mockFile = {
+        buffer,
+        originalname: 'Google_Sheet.csv',
+        mimetype: 'text/csv',
+      } as Express.Multer.File;
+
+      const result = await parseSheet(mockFile);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Sheet fetch error:", error);
+      res.status(400).json({ message: error.message || "Failed to fetch sheet from URL" });
+    }
+  });
+
   // Create submission
   app.post("/api/submissions", async (req, res) => {
     try {
