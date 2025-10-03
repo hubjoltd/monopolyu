@@ -96,42 +96,6 @@ export async function submitToForm(
 
     const formId = formIdMatch[1];
 
-    // Configured mappings for your Google Form
-    const defaultMappings: Record<string, FormFieldMapping> = {
-      gmail: {
-        entryId: 'entry.517524020',
-        preferredHeaders: ['Gmail', 'Email', 'E-mail'],
-        synonyms: ['gmail', 'email', 'mail', 'emailaddress'],
-        required: false
-      },
-      name: {
-        entryId: 'entry.1239450592',
-        preferredHeaders: ['Name'],
-        synonyms: ['name', 'fullname', 'username'],
-        required: false
-      },
-      mobile: {
-        entryId: 'entry.39368183',
-        preferredHeaders: ['Mobile', 'Phone', 'Mobile Number'],
-        synonyms: ['mobile', 'phone', 'phonenumber', 'mobilenumber', 'contact'],
-        required: false
-      },
-      bike: {
-        entryId: 'entry.2137498884',
-        preferredHeaders: ['Choose a Bike', 'Bike', 'Bike Type'],
-        synonyms: ['bike', 'choosebike', 'choosea bike', 'biketype'],
-        required: false
-      },
-      vehicleNo: {
-        entryId: 'entry.659183258',
-        preferredHeaders: ['Vehicle No', 'Vehicle Number', 'Registration'],
-        synonyms: ['vehicle', 'vehicleno', 'vehiclenumber', 'registration', 'regno'],
-        required: false
-      }
-    };
-
-    const activeMappings = mappings || defaultMappings;
-
     console.log(`Submitting ${data.length} records using browser automation...`);
 
     // Launch Puppeteer browser
@@ -147,6 +111,91 @@ export async function submitToForm(
       ]
     });
 
+    // Extract form fields automatically from the first page load
+    const tempPage = await browser.newPage();
+    await tempPage.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    // Extract all form fields and their entry IDs with labels
+    const formFields = await tempPage.evaluate(() => {
+      const fields: Array<{ entryId: string; label: string; type: string }> = [];
+      
+      // Find all input and textarea elements with entry IDs
+      const inputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."]');
+      
+      inputs.forEach((input) => {
+        const entryId = input.getAttribute('name');
+        if (!entryId) return;
+        
+        // Try to find the label/question text
+        let label = '';
+        
+        // Method 1: Look for aria-label
+        label = input.getAttribute('aria-label') || '';
+        
+        // Method 2: Look for parent div containing question text
+        if (!label) {
+          const questionDiv = input.closest('[role="listitem"]');
+          if (questionDiv) {
+            const labelElement = questionDiv.querySelector('[role="heading"]');
+            if (labelElement) {
+              label = labelElement.textContent?.trim() || '';
+            }
+          }
+        }
+        
+        // Method 3: Look for any nearby text content
+        if (!label) {
+          const parent = input.closest('div[data-params]');
+          if (parent) {
+            const textElements = Array.from(parent.querySelectorAll('span'));
+            for (const span of textElements) {
+              const text = span.textContent?.trim();
+              if (text && text.length > 2 && text.length < 200) {
+                label = text;
+                break;
+              }
+            }
+          }
+        }
+        
+        const type = input.tagName.toLowerCase();
+        fields.push({ entryId, label, type });
+      });
+      
+      return fields;
+    });
+    
+    await tempPage.close();
+    
+    console.log(`Found ${formFields.length} form fields:`);
+    formFields.forEach(field => {
+      console.log(`  ${field.entryId}: "${field.label}" (${field.type})`);
+    });
+    
+    // Create automatic mapping from form fields to spreadsheet columns
+    const autoFieldMapping: Record<string, string> = {};
+    const spreadsheetColumns = data.length > 0 ? Object.keys(data[0]) : [];
+    
+    for (const column of spreadsheetColumns) {
+      const normalizedColumn = normalizeHeader(column);
+      
+      // Find matching form field by label similarity
+      for (const field of formFields) {
+        const normalizedLabel = normalizeHeader(field.label);
+        
+        // Exact match or contains match
+        if (normalizedColumn === normalizedLabel || 
+            normalizedLabel.includes(normalizedColumn) ||
+            normalizedColumn.includes(normalizedLabel)) {
+          autoFieldMapping[column] = field.entryId;
+          console.log(`  Mapped "${column}" -> ${field.entryId} ("${field.label}")`);
+          break;
+        }
+      }
+    }
+    
+    console.log(`\nStarting submission of ${data.length} records...`);
+
     let successCount = 0;
     let failCount = 0;
     const errors: string[] = [];
@@ -161,9 +210,9 @@ export async function submitToForm(
 
         let fieldsFilled = 0;
 
-        // Fill each field based on entry IDs
+        // Fill each field using automatic mapping
         for (const [columnName, value] of Object.entries(record)) {
-          const entryId = findMatchingEntryId(columnName, activeMappings);
+          const entryId = autoFieldMapping[columnName];
           
           if (entryId && value !== null && value !== undefined && value !== '') {
             const cleanValue = String(value).trim();
