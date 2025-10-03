@@ -126,60 +126,50 @@ export async function submitToForm(
         const entryId = input.getAttribute('name');
         if (!entryId || entryId.includes('_sentinel')) return;
         
-        // Try to find the label/question text
+        // Try to find the label/question text specific to this input
         let label = '';
         
-        // Method 1: Look for aria-label
+        // Method 1: Look for aria-label (most reliable when present)
         label = input.getAttribute('aria-label') || '';
         
-        // Method 2: Look for data-label attribute
+        // Method 2: Look for the question container specific to this field
         if (!label) {
-          label = input.getAttribute('data-label') || '';
-        }
-        
-        // Method 3: Look for parent div containing question text
-        if (!label) {
-          const questionDiv = input.closest('[role="listitem"]');
-          if (questionDiv) {
-            // Try to find heading
-            const labelElement = questionDiv.querySelector('[role="heading"]');
-            if (labelElement) {
-              label = labelElement.textContent?.trim() || '';
+          // Find the closest question container (each question is typically a listitem)
+          const questionContainer = input.closest('[role="listitem"]');
+          if (questionContainer) {
+            // Get all text nodes in the container
+            const allText = questionContainer.textContent || '';
+            
+            // Look specifically for a heading element within THIS question container
+            const headingElement = questionContainer.querySelector('[role="heading"]');
+            if (headingElement && headingElement.textContent) {
+              label = headingElement.textContent.trim();
             }
             
-            // If still no label, look for any div with class containing "question"
+            // If no heading, look for div.Qr7Oae (Google Forms question title class)
             if (!label) {
-              const questionDivs = questionDiv.querySelectorAll('div[class*="question"], div[class*="Question"]');
-              for (const div of Array.from(questionDivs)) {
-                const text = div.textContent?.trim();
-                if (text && text.length > 2 && text.length < 200 && !text.includes('*')) {
-                  label = text;
-                  break;
-                }
+              const titleDiv = questionContainer.querySelector('div.Qr7Oae');
+              if (titleDiv && titleDiv.textContent) {
+                label = titleDiv.textContent.trim();
               }
             }
           }
         }
         
-        // Method 4: Walk up the DOM tree looking for question text
+        // Method 3: Look for label element associated with this input
         if (!label) {
-          let parent = input.parentElement;
-          let depth = 0;
-          while (parent && depth < 5) {
-            const spans = Array.from(parent.querySelectorAll('span'));
-            for (const span of spans) {
-              const text = span.textContent?.trim();
-              // Look for text that seems like a question (reasonable length, not a placeholder)
-              if (text && text.length > 2 && text.length < 200 && 
-                  !text.match(/^(submit|clear|next|previous)$/i)) {
-                label = text;
-                break;
-              }
+          const inputId = input.getAttribute('id');
+          if (inputId) {
+            const labelElement = document.querySelector(`label[for="${inputId}"]`);
+            if (labelElement && labelElement.textContent) {
+              label = labelElement.textContent.trim();
             }
-            if (label) break;
-            parent = parent.parentElement;
-            depth++;
           }
+        }
+        
+        // If we still don't have a label, use the entry ID as fallback
+        if (!label) {
+          label = entryId;
         }
         
         const type = input.tagName.toLowerCase();
