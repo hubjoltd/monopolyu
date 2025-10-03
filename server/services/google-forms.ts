@@ -186,58 +186,59 @@ export async function submitToForm(
         
         let questionText = '';
         
-        // Method 1: Use aria-labelledby to find the label
-        const ariaLabelledBy = input.getAttribute('aria-labelledby');
-        if (ariaLabelledBy) {
-          const labelElement = document.getElementById(ariaLabelledBy);
-          if (labelElement) {
-            questionText = labelElement.textContent?.trim() || '';
-          }
+        // Method 1: Use aria-label attribute (most reliable for new Google Forms)
+        const ariaLabel = input.getAttribute('aria-label');
+        if (ariaLabel && ariaLabel !== 'null' && ariaLabel.length > 1 && !ariaLabel.toLowerCase().includes('untitled')) {
+          questionText = ariaLabel;
         }
         
-        // Method 2: Use aria-label attribute
+        // Method 2: Use aria-labelledby to find the label
         if (!questionText) {
-          const ariaLabel = input.getAttribute('aria-label');
-          if (ariaLabel && ariaLabel !== 'null' && ariaLabel.length > 1) {
-            questionText = ariaLabel;
+          const ariaLabelledBy = input.getAttribute('aria-labelledby');
+          if (ariaLabelledBy) {
+            const labelElement = document.getElementById(ariaLabelledBy);
+            if (labelElement) {
+              const text = labelElement.textContent?.trim() || '';
+              if (text && !text.toLowerCase().includes('untitled')) {
+                questionText = text;
+              }
+            }
           }
         }
         
-        // Method 3: Find question container by walking up the DOM
+        // Method 3: Look for label in parent elements
         if (!questionText) {
           let parent = input.parentElement;
           
           for (let i = 0; i < 15 && parent; i++) {
-            // Look for the question div (usually has specific data attributes)
-            const questionDiv = parent.querySelector('[data-item-id], [jsname="wSASue"]');
-            if (questionDiv) {
-              // Find heading or label within question container
-              const heading = questionDiv.querySelector('[role="heading"]');
-              if (heading && heading.textContent) {
-                questionText = heading.textContent.trim();
-                break;
-              }
-              
-              // Look for M7eMe class which contains question text
-              const questionLabel = questionDiv.querySelector('.M7eMe, .freebirdFormviewerComponentsQuestionBaseTitle');
-              if (questionLabel && questionLabel.textContent) {
-                questionText = questionLabel.textContent.trim();
+            // Look for div with role="heading"
+            const heading = parent.querySelector('[role="heading"]');
+            if (heading?.textContent) {
+              const text = heading.textContent.trim();
+              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
+                questionText = text;
                 break;
               }
             }
             
-            // Look for any text content in parent with specific pattern
-            const textContent = parent.textContent || '';
-            const lines = textContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-            
-            // If we find a short text line before the input, it might be the question
-            if (lines.length > 0 && lines[0].length > 2 && lines[0].length < 200) {
-              questionText = lines[0];
-              break;
+            // Look for common Google Forms classes
+            const labels = Array.from(parent.querySelectorAll('.M7eMe, .freebirdFormviewerComponentsQuestionBaseTitle, .freebirdFormviewerComponentsQuestionBaseHeader'));
+            for (const label of labels) {
+              const text = label.textContent?.trim();
+              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
+                questionText = text;
+                break;
+              }
             }
             
+            if (questionText) break;
             parent = parent.parentElement;
           }
+        }
+        
+        // Method 4: Use the entry ID as fallback label
+        if (!questionText && entryId) {
+          questionText = `Field ${entryId.replace('entry.', '')}`;
         }
         
         if (entryId && questionText) {
