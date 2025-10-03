@@ -179,11 +179,6 @@ export async function submitToForm(
       entryInputs.forEach((input) => {
         const entryId = input.getAttribute('name') || '';
         
-        // Skip sentinel fields (these are not actual questions)
-        if (entryId.includes('_sentinel')) {
-          return;
-        }
-        
         let questionText = '';
         
         // Method 1: Use aria-label attribute (most reliable for new Google Forms)
