@@ -4,7 +4,7 @@ hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["chromium", "nss", "freetype", "harfbuzz", "glib", "fontconfig"]
+packages = ["chromium", "nss", "freetype", "harfbuzz", "glib", "fontconfig", "dbus"]
 
 [deployment]
 deploymentTarget = "autoscale"
