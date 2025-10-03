@@ -177,6 +177,11 @@ export async function submitToForm(
           continue;
         }
 
+        // Add common Google Forms hidden parameters
+        formData.append('fvv', '1');
+        formData.append('pageHistory', '0');
+        formData.append('fbzx', Date.now().toString());
+
         // Log first submission for debugging
         if (i === 0) {
           console.log('First submission data:', Object.fromEntries(formData.entries()));
