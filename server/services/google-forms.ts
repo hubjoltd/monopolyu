@@ -154,35 +154,40 @@ export async function submitToForm(
     });
     console.log('Form debug info:', JSON.stringify(debugInfo, null, 2));
     
-    // Extract form fields - Google Forms structure uses VISIBLE inputs without entry names
-    // The hidden entry.XXX fields get auto-populated when visible fields are filled
+    // Extract form fields by finding questions and their associated inputs
     const formFields = await tempPage.evaluate(() => {
-      const fields: Array<{ selector: string; label: string; type: string }> = [];
+      const fields: Array<{ selector: string; label: string; type: string; entryId: string }> = [];
       
-      // Find all visible text inputs and textareas (these are what users type into)
-      const visibleInputs = document.querySelectorAll('input[type="text"], input[type="email"], input[type="number"], input[type="tel"], input[type="url"], textarea, input:not([type])');
+      // Find all question containers
+      const questionContainers = document.querySelectorAll('[role="listitem"]');
       
-      visibleInputs.forEach((input) => {
-        // Get the question label via aria-label
-        const label = input.getAttribute('aria-label') || '';
+      questionContainers.forEach((container, index) => {
+        // Find the question text
+        const questionElement = container.querySelector('[role="heading"]');
+        const questionText = questionElement?.textContent?.trim() || '';
         
-        // Create a selector for this specific input
-        const ariaLabel = input.getAttribute('aria-label');
-        let selector = '';
+        // Find the input field within this question container
+        const input = container.querySelector('input[type="text"], input[type="email"], input[type="number"], input[type="tel"], input[type="url"], textarea, input[name^="entry."]') as HTMLInputElement;
         
-        if (ariaLabel) {
-          selector = `input[aria-label="${ariaLabel}"], textarea[aria-label="${ariaLabel}"]`;
-        } else {
-          // Fallback to jsname attribute
-          const jsname = input.getAttribute('jsname');
-          if (jsname) {
-            selector = `input[jsname="${jsname}"], textarea[jsname="${jsname}"]`;
+        if (input && questionText) {
+          // Get the entry ID from the name attribute
+          const entryId = input.getAttribute('name') || '';
+          
+          // Create a unique selector using the entry ID or jsname
+          let selector = '';
+          if (entryId) {
+            selector = `input[name="${entryId}"], textarea[name="${entryId}"]`;
+          } else {
+            const jsname = input.getAttribute('jsname');
+            if (jsname) {
+              selector = `input[jsname="${jsname}"]:nth-of-type(${index + 1}), textarea[jsname="${jsname}"]:nth-of-type(${index + 1})`;
+            }
           }
-        }
-        
-        if (selector && label) {
-          const type = input.tagName.toLowerCase();
-          fields.push({ selector, label, type });
+          
+          if (selector) {
+            const type = input.tagName.toLowerCase();
+            fields.push({ selector, label: questionText, type, entryId });
+          }
         }
       });
       
@@ -193,13 +198,14 @@ export async function submitToForm(
     
     console.log(`Found ${formFields.length} form fields:`);
     formFields.forEach(field => {
-      console.log(`  "${field.label}" (${field.type})`);
+      console.log(`  "${field.label}" (${field.type}) - ${field.entryId || 'no entry ID'}`);
     });
     
     // Create automatic mapping from form fields to spreadsheet columns
     const autoFieldMapping: Record<string, string> = {};
     const spreadsheetColumns = data.length > 0 ? Object.keys(data[0]) : [];
     
+    console.log('\nMapping spreadsheet columns to form fields:');
     for (const column of spreadsheetColumns) {
       const normalizedColumn = normalizeHeader(column);
       
@@ -212,9 +218,13 @@ export async function submitToForm(
             normalizedLabel.includes(normalizedColumn) ||
             normalizedColumn.includes(normalizedLabel)) {
           autoFieldMapping[column] = field.selector;
-          console.log(`  Mapped "${column}" -> "${field.label}"`);
+          console.log(`  ✓ Mapped "${column}" -> "${field.label}"`);
           break;
         }
+      }
+      
+      if (!autoFieldMapping[column]) {
+        console.log(`  ✗ No match found for "${column}"`);
       }
     }
     
