@@ -207,7 +207,24 @@ export async function submitToForm(
         // Log first response for debugging
         if (i === 0) {
           console.log('First response status:', response.status);
-          console.log('First response headers:', Object.fromEntries(response.headers.entries()));
+          const responseText = await response.text();
+          
+          // Try to extract error message from HTML
+          const errorMatch = responseText.match(/<div[^>]*class="[^"]*error[^"]*"[^>]*>([^<]+)<\/div>/i);
+          const warningMatch = responseText.match(/This form can only be viewed by users in the owner/i);
+          const invalidMatch = responseText.match(/invalid/i);
+          
+          if (errorMatch) {
+            console.log('Error message found:', errorMatch[1]);
+          }
+          if (warningMatch) {
+            console.log('⚠️  Form has restricted access - it may need to be publicly accessible');
+          }
+          if (invalidMatch) {
+            console.log('⚠️  Response contains "invalid" - field values may not match form options');
+          }
+          
+          console.log('Response snippet:', responseText.substring(0, 500));
         }
 
         // Google Forms returns 302/303 on successful submission
