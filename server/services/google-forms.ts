@@ -119,25 +119,29 @@ export async function submitToForm(
     await tempPage.screenshot({ path: '/tmp/form-structure.png', fullPage: true });
     console.log('Form screenshot saved to /tmp/form-structure.png');
     
-    // Debug: Print all visible inputs
+    // Debug: Print all visible inputs with more detail
     const debugInfo = await tempPage.evaluate(() => {
       const allInputs = document.querySelectorAll('input, textarea, select');
       const info = {
         totalInputs: allInputs.length,
         visibleInputs: 0,
         entryInputs: 0,
-        samples: [] as string[]
+        visibleSamples: [] as string[]
       };
       
-      allInputs.forEach((input, idx) => {
+      allInputs.forEach((input) => {
         const type = input.getAttribute('type');
         const name = input.getAttribute('name');
         const ariaLabel = input.getAttribute('aria-label');
+        const dataInitialValue = input.getAttribute('data-initial-value');
+        const jsname = input.getAttribute('jsname');
         
         if (type !== 'hidden') {
           info.visibleInputs++;
-          if (idx < 3) {
-            info.samples.push(`${input.tagName} type="${type}" name="${name}" aria-label="${ariaLabel}"`);
+          if (info.visibleSamples.length < 5) {
+            info.visibleSamples.push(
+              `${input.tagName.toLowerCase()} type="${type}" aria-label="${ariaLabel}" jsname="${jsname}"`
+            );
           }
         }
         
@@ -150,69 +154,36 @@ export async function submitToForm(
     });
     console.log('Form debug info:', JSON.stringify(debugInfo, null, 2));
     
-    // Extract all form fields and their entry IDs with labels
+    // Extract form fields - Google Forms structure uses VISIBLE inputs without entry names
+    // The hidden entry.XXX fields get auto-populated when visible fields are filled
     const formFields = await tempPage.evaluate(() => {
-      const fields: Array<{ entryId: string; label: string; type: string }> = [];
+      const fields: Array<{ selector: string; label: string; type: string }> = [];
       
-      // Find all input and textarea elements with entry IDs (exclude hidden fields!)
-      const inputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
+      // Find all visible text inputs and textareas (these are what users type into)
+      const visibleInputs = document.querySelectorAll('input[type="text"], input[type="email"], input[type="number"], input[type="tel"], input[type="url"], textarea, input:not([type])');
       
-      inputs.forEach((input) => {
-        const entryId = input.getAttribute('name');
-        if (!entryId || entryId.includes('_sentinel')) return;
+      visibleInputs.forEach((input) => {
+        // Get the question label via aria-label
+        const label = input.getAttribute('aria-label') || '';
         
-        // SKIP HIDDEN FIELDS - they are not the actual user-facing fields
-        const inputType = input.getAttribute('type');
-        if (inputType === 'hidden') return;
+        // Create a selector for this specific input
+        const ariaLabel = input.getAttribute('aria-label');
+        let selector = '';
         
-        // Try to find the label/question text specific to this input
-        let label = '';
-        
-        // Method 1: Look for aria-label (most reliable when present)
-        label = input.getAttribute('aria-label') || '';
-        
-        // Method 2: Look for the question container specific to this field
-        if (!label) {
-          // Find the closest question container (each question is typically a listitem)
-          const questionContainer = input.closest('[role="listitem"]');
-          if (questionContainer) {
-            // Get all text nodes in the container
-            const allText = questionContainer.textContent || '';
-            
-            // Look specifically for a heading element within THIS question container
-            const headingElement = questionContainer.querySelector('[role="heading"]');
-            if (headingElement && headingElement.textContent) {
-              label = headingElement.textContent.trim();
-            }
-            
-            // If no heading, look for div.Qr7Oae (Google Forms question title class)
-            if (!label) {
-              const titleDiv = questionContainer.querySelector('div.Qr7Oae');
-              if (titleDiv && titleDiv.textContent) {
-                label = titleDiv.textContent.trim();
-              }
-            }
+        if (ariaLabel) {
+          selector = `input[aria-label="${ariaLabel}"], textarea[aria-label="${ariaLabel}"]`;
+        } else {
+          // Fallback to jsname attribute
+          const jsname = input.getAttribute('jsname');
+          if (jsname) {
+            selector = `input[jsname="${jsname}"], textarea[jsname="${jsname}"]`;
           }
         }
         
-        // Method 3: Look for label element associated with this input
-        if (!label) {
-          const inputId = input.getAttribute('id');
-          if (inputId) {
-            const labelElement = document.querySelector(`label[for="${inputId}"]`);
-            if (labelElement && labelElement.textContent) {
-              label = labelElement.textContent.trim();
-            }
-          }
+        if (selector && label) {
+          const type = input.tagName.toLowerCase();
+          fields.push({ selector, label, type });
         }
-        
-        // If we still don't have a label, use the entry ID as fallback
-        if (!label) {
-          label = entryId;
-        }
-        
-        const type = input.tagName.toLowerCase();
-        fields.push({ entryId, label, type });
       });
       
       return fields;
@@ -222,7 +193,7 @@ export async function submitToForm(
     
     console.log(`Found ${formFields.length} form fields:`);
     formFields.forEach(field => {
-      console.log(`  ${field.entryId}: "${field.label}" (${field.type})`);
+      console.log(`  "${field.label}" (${field.type})`);
     });
     
     // Create automatic mapping from form fields to spreadsheet columns
@@ -240,8 +211,8 @@ export async function submitToForm(
         if (normalizedColumn === normalizedLabel || 
             normalizedLabel.includes(normalizedColumn) ||
             normalizedColumn.includes(normalizedLabel)) {
-          autoFieldMapping[column] = field.entryId;
-          console.log(`  Mapped "${column}" -> ${field.entryId} ("${field.label}")`);
+          autoFieldMapping[column] = field.selector;
+          console.log(`  Mapped "${column}" -> "${field.label}"`);
           break;
         }
       }
@@ -265,24 +236,23 @@ export async function submitToForm(
 
         // Fill each field using automatic mapping
         for (const [columnName, value] of Object.entries(record)) {
-          const entryId = autoFieldMapping[columnName];
+          const fieldSelector = autoFieldMapping[columnName];
           
-          if (entryId && value !== null && value !== undefined && value !== '') {
+          if (fieldSelector && value !== null && value !== undefined && value !== '') {
             const cleanValue = String(value).trim();
             
             try {
-              // Try different selectors for the input
-              const selector = `input[name="${entryId}"], textarea[name="${entryId}"]`;
-              await page.waitForSelector(selector, { timeout: 5000 });
-              await page.type(selector, cleanValue);
+              // Use the selector to find the visible input field
+              await page.waitForSelector(fieldSelector, { timeout: 5000 });
+              await page.type(fieldSelector, cleanValue);
               fieldsFilled++;
               
               if (i === 0) {
-                console.log(`  Filled ${entryId} = "${cleanValue}"`);
+                console.log(`  Filled "${columnName}" = "${cleanValue}"`);
               }
             } catch (selectorError) {
               if (i === 0) {
-                console.log(`  Could not find field ${entryId} for column "${columnName}"`);
+                console.log(`  Could not find field for column "${columnName}"`);
               }
             }
           }
