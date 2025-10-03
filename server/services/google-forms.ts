@@ -272,26 +272,64 @@ export async function submitToForm(
     const spreadsheetColumns = data.length > 0 ? Object.keys(data[0]) : [];
     
     console.log('\nMapping spreadsheet columns to form fields:');
+    
+    // First try: exact label matching
+    const unmatchedColumns: string[] = [];
     for (const column of spreadsheetColumns) {
       const normalizedColumn = normalizeHeader(column);
+      let matched = false;
       
-      // Find matching form field by label similarity
       for (const field of formFields) {
         const normalizedLabel = normalizeHeader(field.label);
         
-        // Exact match or contains match
-        if (normalizedColumn === normalizedLabel || 
-            normalizedLabel.includes(normalizedColumn) ||
-            normalizedColumn.includes(normalizedLabel)) {
+        if (normalizedColumn === normalizedLabel) {
           autoFieldMapping[column] = field.selector;
-          console.log(`  ✓ Mapped "${column}" -> "${field.label}"`);
+          console.log(`  ✓ Exact match: "${column}" -> "${field.label}"`);
+          matched = true;
           break;
         }
       }
       
-      if (!autoFieldMapping[column]) {
-        console.log(`  ✗ No match found for "${column}"`);
+      if (!matched) {
+        unmatchedColumns.push(column);
       }
+    }
+    
+    // Second try: partial matching for unmatched columns
+    for (const column of unmatchedColumns.slice()) {
+      const normalizedColumn = normalizeHeader(column);
+      
+      for (const field of formFields) {
+        if (autoFieldMapping[column]) break; // Already mapped
+        
+        const normalizedLabel = normalizeHeader(field.label);
+        const fieldAlreadyMapped = Object.values(autoFieldMapping).includes(field.selector);
+        
+        if (!fieldAlreadyMapped && (
+          normalizedLabel.includes(normalizedColumn) ||
+          normalizedColumn.includes(normalizedLabel)
+        )) {
+          autoFieldMapping[column] = field.selector;
+          console.log(`  ✓ Partial match: "${column}" -> "${field.label}"`);
+          unmatchedColumns.splice(unmatchedColumns.indexOf(column), 1);
+          break;
+        }
+      }
+    }
+    
+    // Third try: map remaining columns by position
+    const unmappedFields = formFields.filter(f => !Object.values(autoFieldMapping).includes(f.selector));
+    for (let i = 0; i < unmatchedColumns.length && i < unmappedFields.length; i++) {
+      const column = unmatchedColumns[i];
+      const field = unmappedFields[i];
+      autoFieldMapping[column] = field.selector;
+      console.log(`  ✓ Mapped by position: "${column}" -> "${field.label}" (${field.entryId})`);
+    }
+    
+    // Log any remaining unmatched columns
+    const stillUnmatched = spreadsheetColumns.filter(col => !autoFieldMapping[col]);
+    for (const column of stillUnmatched) {
+      console.log(`  ✗ No match found for "${column}"`);
     }
     
     console.log(`\nStarting submission of ${data.length} records...`);
