@@ -119,30 +119,51 @@ export async function submitToForm(
     await tempPage.screenshot({ path: '/tmp/form-structure.png', fullPage: true });
     console.log('Form screenshot saved to /tmp/form-structure.png');
     
-    // Debug: Print HTML structure around first input
-    const debugHtml = await tempPage.evaluate(() => {
-      const firstInput = document.querySelector('input[name^="entry."]');
-      if (firstInput) {
-        let container = firstInput;
-        for (let i = 0; i < 3; i++) {
-          container = container.parentElement || container;
+    // Debug: Print all visible inputs
+    const debugInfo = await tempPage.evaluate(() => {
+      const allInputs = document.querySelectorAll('input, textarea, select');
+      const info = {
+        totalInputs: allInputs.length,
+        visibleInputs: 0,
+        entryInputs: 0,
+        samples: [] as string[]
+      };
+      
+      allInputs.forEach((input, idx) => {
+        const type = input.getAttribute('type');
+        const name = input.getAttribute('name');
+        const ariaLabel = input.getAttribute('aria-label');
+        
+        if (type !== 'hidden') {
+          info.visibleInputs++;
+          if (idx < 3) {
+            info.samples.push(`${input.tagName} type="${type}" name="${name}" aria-label="${ariaLabel}"`);
+          }
         }
-        return container.outerHTML.substring(0, 1000);
-      }
-      return 'No input found';
+        
+        if (name && name.startsWith('entry.')) {
+          info.entryInputs++;
+        }
+      });
+      
+      return info;
     });
-    console.log('Sample HTML structure:', debugHtml);
+    console.log('Form debug info:', JSON.stringify(debugInfo, null, 2));
     
     // Extract all form fields and their entry IDs with labels
     const formFields = await tempPage.evaluate(() => {
       const fields: Array<{ entryId: string; label: string; type: string }> = [];
       
-      // Find all input and textarea elements with entry IDs
+      // Find all input and textarea elements with entry IDs (exclude hidden fields!)
       const inputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
       
       inputs.forEach((input) => {
         const entryId = input.getAttribute('name');
         if (!entryId || entryId.includes('_sentinel')) return;
+        
+        // SKIP HIDDEN FIELDS - they are not the actual user-facing fields
+        const inputType = input.getAttribute('type');
+        if (inputType === 'hidden') return;
         
         // Try to find the label/question text specific to this input
         let label = '';
