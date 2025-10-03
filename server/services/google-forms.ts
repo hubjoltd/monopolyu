@@ -372,13 +372,15 @@ export async function submitToForm(
               // Handle different input types
               if (fieldType.tagName === 'select') {
                 // Dropdown - select by visible text or value
-                const selected = await page.evaluate((selector, value) => {
+                const result = await page.evaluate((selector, value) => {
                   const select = document.querySelector(selector) as HTMLSelectElement;
-                  if (!select) return false;
+                  if (!select) return { success: false, options: [] };
+                  
+                  // Get all available options
+                  const options = Array.from(select.options).map(opt => opt.textContent?.trim() || opt.value);
                   
                   // Try to find option by text content
-                  const options = Array.from(select.options);
-                  const option = options.find(opt => 
+                  const option = Array.from(select.options).find(opt => 
                     opt.textContent?.trim().toLowerCase() === value.toLowerCase() ||
                     opt.value.toLowerCase() === value.toLowerCase()
                   );
@@ -386,28 +388,29 @@ export async function submitToForm(
                   if (option) {
                     select.value = option.value;
                     select.dispatchEvent(new Event('change', { bubbles: true }));
-                    return true;
+                    return { success: true, options };
                   }
-                  return false;
+                  return { success: false, options };
                 }, fieldSelector, cleanValue);
                 
-                if (selected) {
+                if (result.success) {
                   fieldsFilled++;
                   if (i === 0) console.log(`  ✓ Selected "${columnName}" = "${cleanValue}"`);
                 } else if (i === 0) {
-                  console.log(`  ✗ Could not find option "${cleanValue}" for "${columnName}"`);
+                  console.log(`  ✗ Could not find option "${cleanValue}" for "${columnName}". Available: ${result.options.join(', ')}`);
                 }
-              } else if (fieldType.type === 'radio' || fieldType.role === 'radio') {
+              } else if (fieldType.type === 'radio' || fieldType.role === 'radio' || fieldSelector.includes('_sentinel')) {
                 // Radio button - find and click the one with matching label
-                const clicked = await page.evaluate((selector, value) => {
+                const result = await page.evaluate((selector, value) => {
                   const input = document.querySelector(selector) as HTMLInputElement;
-                  if (!input) return false;
+                  if (!input) return { success: false, options: [] };
                   
                   // Get the entry name (without _sentinel)
                   const entryName = input.name.replace('_sentinel', '');
                   
                   // Find all radios with this entry name
                   const radios = Array.from(document.querySelectorAll(`[name="${entryName}"]`)) as HTMLInputElement[];
+                  const options: string[] = [];
                   
                   for (const radio of radios) {
                     // Find associated label
@@ -425,20 +428,22 @@ export async function submitToForm(
                       if (parent) labelText = parent.textContent?.trim() || '';
                     }
                     
+                    if (labelText) options.push(labelText);
+                    
                     if (labelText.toLowerCase().includes(value.toLowerCase()) || 
                         value.toLowerCase().includes(labelText.toLowerCase())) {
                       radio.click();
-                      return true;
+                      return { success: true, options };
                     }
                   }
-                  return false;
+                  return { success: false, options };
                 }, fieldSelector, cleanValue);
                 
-                if (clicked) {
+                if (result.success) {
                   fieldsFilled++;
                   if (i === 0) console.log(`  ✓ Clicked radio "${columnName}" = "${cleanValue}"`);
                 } else if (i === 0) {
-                  console.log(`  ✗ Could not find radio option "${cleanValue}" for "${columnName}"`);
+                  console.log(`  ✗ Could not find radio option "${cleanValue}" for "${columnName}". Available: ${result.options.join(', ')}`);
                 }
               } else if (fieldType.type === 'checkbox') {
                 // Checkbox - check if value indicates it should be checked
