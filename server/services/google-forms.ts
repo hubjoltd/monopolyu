@@ -154,40 +154,48 @@ export async function submitToForm(
     });
     console.log('Form debug info:', JSON.stringify(debugInfo, null, 2));
     
-    // Extract form fields by finding questions and their associated inputs
+    // Extract form fields - find all inputs with entry.XXX names
     const formFields = await tempPage.evaluate(() => {
       const fields: Array<{ selector: string; label: string; type: string; entryId: string }> = [];
       
-      // Find all question containers
-      const questionContainers = document.querySelectorAll('[role="listitem"]');
+      // Method 1: Find all inputs with name starting with "entry."
+      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."]');
       
-      questionContainers.forEach((container, index) => {
-        // Find the question text
-        const questionElement = container.querySelector('[role="heading"]');
-        const questionText = questionElement?.textContent?.trim() || '';
+      entryInputs.forEach((input) => {
+        const entryId = input.getAttribute('name') || '';
         
-        // Find the input field within this question container
-        const input = container.querySelector('input[type="text"], input[type="email"], input[type="number"], input[type="tel"], input[type="url"], textarea, input[name^="entry."]') as HTMLInputElement;
+        // Try to find the question label by traversing up the DOM
+        let questionText = '';
+        let parent = input.parentElement;
         
-        if (input && questionText) {
-          // Get the entry ID from the name attribute
-          const entryId = input.getAttribute('name') || '';
-          
-          // Create a unique selector using the entry ID or jsname
-          let selector = '';
-          if (entryId) {
-            selector = `input[name="${entryId}"], textarea[name="${entryId}"]`;
-          } else {
-            const jsname = input.getAttribute('jsname');
-            if (jsname) {
-              selector = `input[jsname="${jsname}"]:nth-of-type(${index + 1}), textarea[jsname="${jsname}"]:nth-of-type(${index + 1})`;
-            }
+        // Walk up to find the question container
+        for (let i = 0; i < 10 && parent; i++) {
+          // Look for elements with role="heading" or containing question text
+          const heading = parent.querySelector('[role="heading"]');
+          if (heading) {
+            questionText = heading.textContent?.trim() || '';
+            break;
           }
           
-          if (selector) {
-            const type = input.tagName.toLowerCase();
-            fields.push({ selector, label: questionText, type, entryId });
+          // Look for span with specific classes that contain questions
+          const questionSpan = parent.querySelector('span[dir="auto"]');
+          if (questionSpan && questionSpan.textContent && questionSpan.textContent.length > 3) {
+            questionText = questionSpan.textContent.trim();
+            break;
           }
+          
+          parent = parent.parentElement;
+        }
+        
+        if (entryId) {
+          const selector = `[name="${entryId}"]`;
+          const type = input.tagName.toLowerCase();
+          fields.push({ 
+            selector, 
+            label: questionText || `Field ${entryId}`, 
+            type, 
+            entryId 
+          });
         }
       });
       
