@@ -195,7 +195,11 @@ export async function submitToForm(
           body: formData,
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
-            'Referer': `https://docs.google.com/forms/d/e/${formId}/viewform`
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Origin': 'https://docs.google.com',
+            'Referer': `https://docs.google.com/forms/d/e/${formId}/viewform`,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9'
           },
           redirect: 'manual'
         });
@@ -203,8 +207,7 @@ export async function submitToForm(
         // Log first response for debugging
         if (i === 0) {
           console.log('First response status:', response.status);
-          const responseText = await response.text();
-          console.log('Response snippet:', responseText.substring(0, 200));
+          console.log('First response headers:', Object.fromEntries(response.headers.entries()));
         }
 
         // Google Forms returns 302/303 on successful submission
