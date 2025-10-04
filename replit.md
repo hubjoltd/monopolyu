@@ -4,9 +4,33 @@
 
 FormFlow is a web application that automates the submission of bulk data to Google Forms. Users can upload spreadsheet files (CSV/Excel), validate Google Form URLs, and submit records in configurable batches. The application provides real-time progress tracking, success notifications, and completion reports.
 
+## Recent Changes
+
+**October 4, 2025** - Replit Environment Setup Completed
+- Configured workflow to run development server on port 5000
+- Verified Vite configuration has `allowedHosts: true` for Replit proxy compatibility
+- Tested build process - production builds successfully to `dist/` folder
+- Configured deployment for autoscale deployment target
+- Application successfully running with in-memory storage (no database required by default)
+
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
+
+## Replit Environment Configuration
+
+**Development Server**
+- Runs on port 5000 (required for Replit environment)
+- Uses `npm run dev` which executes `tsx server/index.ts` in development mode
+- Vite dev server configured with `allowedHosts: true` to work with Replit's proxy
+- Host set to `0.0.0.0` for external access
+
+**Production Deployment**
+- Build command: `npm run build` (builds both Vite frontend and esbuild backend)
+- Start command: `npm run start` (runs `node dist/index.js`)
+- Deployment type: Autoscale (stateless, suitable for this application)
+- Frontend assets built to `dist/public/`
+- Backend server bundled to `dist/index.js`
 
 ## System Architecture
 
