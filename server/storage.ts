@@ -35,6 +35,7 @@ export class MemStorage implements IStorage {
       fileName: insertSubmission.fileName,
       totalRecords: insertSubmission.totalRecords,
       batchSize: insertSubmission.batchSize,
+      delayBetweenBatches: insertSubmission.delayBetweenBatches ?? 2000,
       data: insertSubmission.data as Record<string, any>[],
       processedRecords: 0,
       status: 'pending',

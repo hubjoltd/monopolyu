@@ -6,6 +6,12 @@ FormFlow is a web application that automates the submission of bulk data to Goog
 
 ## Recent Changes
 
+**October 4, 2025** - Added Configurable Batch Delay Feature
+- Added "Delay Between Batches" slider (1-30 seconds, default 2 seconds)
+- Users can now control the time between batch submissions to avoid rate limiting
+- Updated estimated time calculation to use the configurable delay
+- Backend now uses the user-specified delay instead of hardcoded 2-second wait
+
 **October 4, 2025** - Replit Environment Setup Completed
 - Configured workflow to run development server on port 5000
 - Verified Vite configuration has `allowedHosts: true` for Replit proxy compatibility

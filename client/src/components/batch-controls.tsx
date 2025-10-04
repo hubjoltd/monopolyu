@@ -31,12 +31,13 @@ export default function BatchControls({
   onAllComplete
 }: BatchControlsProps) {
   const [batchSize, setBatchSize] = useState(100);
+  const [delaySeconds, setDelaySeconds] = useState(2);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const { toast } = useToast();
   const { playSuccess } = useAudio();
 
   const numberOfBatches = Math.ceil(sheetData.length / batchSize);
-  const estimatedTimeMinutes = Math.ceil((numberOfBatches * 10) / 60); // Estimate 10 seconds per batch
+  const estimatedTimeMinutes = Math.ceil((numberOfBatches * delaySeconds) / 60);
 
   const createSubmissionMutation = useMutation({
     mutationFn: async () => {
@@ -46,6 +47,7 @@ export default function BatchControls({
         fileName,
         totalRecords: sheetData.length,
         batchSize,
+        delayBetweenBatches: delaySeconds * 1000,
         data: sheetData,
       });
       return response.json();
@@ -149,6 +151,28 @@ export default function BatchControls({
             </div>
           </div>
           <p className="text-xs text-muted-foreground mt-2">Maximum: 500 records per submission</p>
+        </div>
+
+        <div>
+          <Label className="block text-sm font-medium text-foreground mb-3">
+            Delay Between Batches (seconds)
+          </Label>
+          <div className="flex items-center gap-4">
+            <Slider
+              value={[delaySeconds]}
+              onValueChange={(value) => setDelaySeconds(value[0])}
+              min={1}
+              max={30}
+              step={1}
+              className="flex-1"
+              disabled={isProcessing}
+              data-testid="slider-delay"
+            />
+            <div className="px-4 py-2 bg-secondary/10 text-secondary-foreground font-mono font-semibold rounded-lg min-w-[80px] text-center">
+              {delaySeconds}s
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">Time to wait between batch submissions</p>
         </div>
 
         {sheetData.length > 0 && (

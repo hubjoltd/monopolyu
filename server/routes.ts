@@ -180,6 +180,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     const data = submission.data;
     const batchSize = submission.batchSize;
+    const delayMs = submission.delayBetweenBatches ?? 2000;
     const totalBatches = Math.ceil(data.length / batchSize);
 
     for (let i = 0; i < totalBatches; i++) {
@@ -208,9 +209,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const newProcessedRecords = (i + 1) * batchSize;
         await storage.updateSubmissionProgress(submissionId, Math.min(newProcessedRecords, data.length));
 
-        // Add delay between batches to avoid rate limiting
+        // Add configurable delay between batches to avoid rate limiting
         if (i < totalBatches - 1) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise(resolve => setTimeout(resolve, delayMs));
         }
       } catch (error: any) {
         console.error(`Batch ${batchNumber} failed:`, error);

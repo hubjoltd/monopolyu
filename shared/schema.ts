@@ -10,6 +10,7 @@ export const submissions = pgTable("submissions", {
   fileName: text("file_name").notNull(),
   totalRecords: integer("total_records").notNull(),
   batchSize: integer("batch_size").notNull(),
+  delayBetweenBatches: integer("delay_between_batches").default(2000),
   processedRecords: integer("processed_records").default(0),
   status: text("status").notNull().default("pending"), // pending, processing, completed, failed
   data: json("data").$type<Record<string, any>[]>().notNull(),
