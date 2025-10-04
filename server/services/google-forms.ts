@@ -113,6 +113,11 @@ export async function submitToForm(
 
     // Extract form fields automatically from the first page load
     const tempPage = await browser.newPage();
+    
+    // Apply saved authentication cookies if available
+    const { googleAuth } = await import('./auth');
+    await googleAuth.applyCookies(tempPage);
+    
     await tempPage.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
     // Save screenshot for debugging

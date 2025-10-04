@@ -4,6 +4,7 @@ import FormSelection from "@/components/form-selection";
 import SheetUpload from "@/components/sheet-upload";
 import BatchControls from "@/components/batch-controls";
 import StatusCard from "@/components/status-card";
+import AuthStatus from "@/components/auth-status";
 import SuccessPopup from "@/components/success-popup";
 import CompletionPopup from "@/components/completion-popup";
 import { HelpCircle, Info } from "lucide-react";
@@ -103,6 +104,8 @@ export default function Home() {
 
           {/* Control Panel */}
           <div className="space-y-6">
+            <AuthStatus />
+            
             <BatchControls
               formData={formData}
               sheetData={sheetData}
