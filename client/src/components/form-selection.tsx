@@ -32,10 +32,16 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
       });
     },
     onError: (error: any) => {
+      // Still set basic form data even on validation failure
+      setFormData({
+        url: formUrl,
+        title: "Google Form",
+        description: "Auto-detection failed, but you can proceed with submission",
+        fields: []
+      });
       toast({
-        title: "Form validation failed",
-        description: error.message || "Please check the URL and try again",
-        variant: "destructive",
+        title: "Could not auto-detect form fields",
+        description: "You can still proceed with submission - the system will attempt to map fields automatically",
       });
     },
     onSettled: () => {

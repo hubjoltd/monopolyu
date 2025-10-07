@@ -109,7 +109,7 @@ export default function BatchControls({
     }
   }, [submissionStatus, currentSubmission, soundEnabled, playSuccess, onBatchComplete, onAllComplete, setCurrentSubmission]);
 
-  const canStart = formData && sheetData.length > 0 && !currentSubmission?.id;
+  const canStart = formData?.url && sheetData.length > 0 && !currentSubmission?.id;
   const isProcessing = currentSubmission?.status === 'processing';
 
   const handleStart = () => {
