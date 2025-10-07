@@ -94,6 +94,20 @@ export async function validateForm(formUrl: string): Promise<FormData> {
     });
 
     const page = await browser.newPage();
+    
+    // Intercept network requests to capture form submission format
+    const formRequests: any[] = [];
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      if (request.url().includes('formResponse')) {
+        const postData = request.postData();
+        if (postData) {
+          formRequests.push({ url: request.url(), body: postData });
+        }
+      }
+      request.continue();
+    });
+    
     await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
     // Wait for form to fully load
@@ -286,6 +300,32 @@ export async function validateForm(formUrl: string): Promise<FormData> {
       
       return fields;
     });
+
+    // If no fields found, try filling form to see submission format
+    if (htmlFields.length === 0) {
+      console.log('Attempting to inspect form submission format...');
+      try {
+        // Find all visible input/textarea elements
+        const inputs = await page.$$('input[type="text"], textarea, input[type="email"]');
+        if (inputs.length > 0) {
+          console.log(`Found ${inputs.length} input elements, filling first one to test...`);
+          await inputs[0].type('test');
+          
+          // Look for submit button
+          const submitBtn = await page.$('div[role="button"]');
+          if (submitBtn) {
+            await submitBtn.click();
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            if (formRequests.length > 0) {
+              console.log('Captured form submission:', formRequests[0].body.substring(0, 200));
+            }
+          }
+        }
+      } catch (e) {
+        console.log('Could not test form submission');
+      }
+    }
 
     await browser.close();
     browser = null;
