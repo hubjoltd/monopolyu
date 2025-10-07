@@ -238,31 +238,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/auth/login", async (_req, res) => {
-    try {
-      const success = await googleAuth.performInteractiveLogin();
-      if (success) {
-        const status = await googleAuth.getAuthStatus();
-        res.json({ success: true, ...status });
-      } else {
-        res.status(400).json({ success: false, message: "Login was cancelled or failed" });
-      }
-    } catch (error: any) {
-      console.error("Login error:", error);
-      res.status(500).json({ success: false, message: error.message || "Login failed" });
-    }
-  });
-
-  app.post("/api/auth/logout", async (_req, res) => {
-    try {
-      googleAuth.clearAuth();
-      res.json({ success: true, message: "Logged out successfully" });
-    } catch (error: any) {
-      console.error("Logout error:", error);
-      res.status(500).json({ success: false, message: error.message || "Logout failed" });
-    }
-  });
-
   const httpServer = createServer(app);
   return httpServer;
 }
