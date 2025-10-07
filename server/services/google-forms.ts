@@ -1,11 +1,12 @@
 import { googleAuth } from './auth';
+import puppeteer from 'puppeteer';
 
 interface FormField {
   title: string;
   type: string;
   id: string;
   required: boolean;
-  entryId?: string;
+  entryId: string;
 }
 
 interface FormData {
@@ -31,6 +32,8 @@ function normalizeHeader(header: string): string {
 }
 
 export async function validateForm(formUrl: string): Promise<FormData> {
+  let browser;
+  
   try {
     // Extract form ID from URL
     const formIdMatch = formUrl.match(/\/forms\/d\/e\/([a-zA-Z0-9-_]+)/);
@@ -41,53 +44,155 @@ export async function validateForm(formUrl: string): Promise<FormData> {
     const formId = formIdMatch[1];
     console.log(`Fetching form structure for form ID: ${formId}`);
 
-    // Get access token from service account
-    const accessToken = await googleAuth.getAccessToken();
+    // Try to get form structure from Google Forms API first
+    let apiFormData: any = null;
+    let apiFields: Map<string, any> = new Map();
+    
+    try {
+      const accessToken = await googleAuth.getAccessToken();
+      const apiUrl = `https://forms.googleapis.com/v1/forms/${formId}`;
+      const response = await fetch(apiUrl, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
 
-    // Fetch form metadata using Google Forms API
-    const apiUrl = `https://forms.googleapis.com/v1/forms/${formId}`;
-    const response = await fetch(apiUrl, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
+      if (response.ok) {
+        apiFormData = await response.json();
+        
+        // Create a map of question titles from API
+        if (apiFormData.items) {
+          for (const item of apiFormData.items) {
+            if (item.questionItem && item.title) {
+              apiFields.set(item.title.toLowerCase().trim(), {
+                title: item.title,
+                type: Object.keys(item.questionItem.question)[0],
+                required: item.questionItem.question.required || false,
+              });
+            }
+          }
+        }
+        console.log(`✓ Fetched ${apiFields.size} questions from Forms API`);
+      }
+    } catch (apiError) {
+      console.log('Note: Could not access Forms API, will use HTML parsing only');
+    }
+
+    // Always parse HTML to get entry IDs (required for submission)
+    console.log('Extracting entry IDs from form HTML...');
+    
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath: '/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+      ]
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Forms API error:', errorText);
-      throw new Error(`Failed to fetch form: ${response.statusText}. Make sure the form is shared with the service account: ${(await googleAuth.getAuthStatus()).email}`);
-    }
-
-    const formData = await response.json();
-
-    // Extract form fields
-    const fields: FormField[] = [];
+    const page = await browser.newPage();
+    await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
-    if (formData.items) {
-      for (const item of formData.items) {
-        if (item.questionItem) {
-          const question = item.questionItem.question;
-          const questionId = item.itemId || item.questionItem.question.questionId;
-          
+    // Extract form title
+    const formTitle = await page.evaluate(() => {
+      const titleElement = document.querySelector('[role="heading"]');
+      return titleElement?.textContent?.trim() || 'Google Form';
+    });
+
+    // Extract entry IDs and labels from HTML
+    const htmlFields = await page.evaluate(() => {
+      const fields: Array<{ entryId: string; label: string; type: string }> = [];
+      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
+      
+      entryInputs.forEach((input) => {
+        const entryId = input.getAttribute('name') || '';
+        if (!entryId) return;
+        
+        let questionText = '';
+        
+        // Try multiple methods to get the label
+        const ariaLabel = input.getAttribute('aria-label');
+        if (ariaLabel && ariaLabel.length > 1 && !ariaLabel.toLowerCase().includes('untitled')) {
+          questionText = ariaLabel;
+        }
+        
+        if (!questionText) {
+          const ariaLabelledBy = input.getAttribute('aria-labelledby');
+          if (ariaLabelledBy) {
+            const labelElement = document.getElementById(ariaLabelledBy);
+            if (labelElement?.textContent) {
+              questionText = labelElement.textContent.trim();
+            }
+          }
+        }
+        
+        if (!questionText) {
+          let parent = input.parentElement;
+          for (let i = 0; i < 15 && parent; i++) {
+            const heading = parent.querySelector('[role="heading"]');
+            if (heading?.textContent) {
+              const text = heading.textContent.trim();
+              if (text.length > 1 && !text.toLowerCase().includes('untitled')) {
+                questionText = text;
+                break;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+        
+        if (questionText || entryId) {
           fields.push({
-            id: questionId,
-            title: item.title || 'Untitled Question',
-            type: Object.keys(question)[0], // e.g., 'textQuestion', 'choiceQuestion', etc.
-            required: question.required || false,
-            entryId: questionId, // Use question ID as entry ID
+            entryId,
+            label: questionText || entryId,
+            type: input.tagName.toLowerCase()
           });
         }
+      });
+      
+      return fields;
+    });
+
+    await browser.close();
+    browser = null;
+
+    console.log(`✓ Extracted ${htmlFields.length} entry IDs from HTML`);
+
+    // Merge API data with HTML entry IDs (use normalized matching)
+    const fields: FormField[] = htmlFields.map(htmlField => {
+      const normalizedLabel = normalizeHeader(htmlField.label);
+      
+      // Find matching API field by normalized label
+      let apiField = null;
+      for (const [apiTitle, data] of Array.from(apiFields.entries())) {
+        if (normalizeHeader(apiTitle) === normalizedLabel) {
+          apiField = data;
+          break;
+        }
       }
-    }
+      
+      return {
+        id: htmlField.entryId,
+        title: apiField?.title || htmlField.label,
+        type: apiField?.type || htmlField.type,
+        required: apiField?.required || false,
+        entryId: htmlField.entryId,
+      };
+    });
 
     return {
-      title: formData.info?.title || 'Google Form',
-      description: formData.info?.description || '',
+      title: apiFormData?.info?.title || formTitle,
+      description: apiFormData?.info?.description || '',
       url: formUrl,
       fields,
     };
   } catch (error: any) {
+    if (browser) {
+      await browser.close();
+    }
     console.error('Form validation error:', error);
     throw new Error(`Failed to validate form: ${error.message}`);
   }
@@ -99,20 +204,20 @@ export async function submitToForm(
   mappings?: Record<string, FormFieldMapping>
 ): Promise<void> {
   try {
-    // First, get form structure to understand the fields
+    // Get form structure
     const formData = await validateForm(formUrl);
     
     console.log(`\nForm: ${formData.title}`);
     console.log(`Found ${formData.fields.length} fields`);
     console.log(`Submitting ${data.length} records...\n`);
 
-    // Create automatic mapping from spreadsheet columns to form fields based on labels
+    // Create automatic mapping from spreadsheet columns to form fields
     const spreadsheetColumns = data.length > 0 ? Object.keys(data[0]) : [];
     const fieldMapping: Record<string, FormField> = {};
 
     console.log('Auto-mapping spreadsheet columns to form fields:');
     
-    // Try exact match first
+    // Exact match first
     for (const column of spreadsheetColumns) {
       const normalizedColumn = normalizeHeader(column);
       
@@ -127,7 +232,7 @@ export async function submitToForm(
       }
     }
 
-    // Try partial match for unmapped columns
+    // Partial match for unmapped columns
     const unmappedColumns = spreadsheetColumns.filter(col => !fieldMapping[col]);
     for (const column of unmappedColumns) {
       const normalizedColumn = normalizeHeader(column);
@@ -145,6 +250,19 @@ export async function submitToForm(
           break;
         }
       }
+    }
+
+    // Check for required fields that aren't mapped
+    const unmappedRequiredFields = formData.fields.filter(
+      field => field.required && !Object.values(fieldMapping).some(f => f.id === field.id)
+    );
+    
+    if (unmappedRequiredFields.length > 0) {
+      console.warn('\n⚠ Warning: Required fields without mapping:');
+      unmappedRequiredFields.forEach(field => {
+        console.warn(`  - "${field.title}" (${field.entryId})`);
+      });
+      console.warn('Submissions may fail if these fields are empty.\n');
     }
 
     // Extract form submission endpoint from URL
@@ -172,8 +290,7 @@ export async function submitToForm(
         
         if (field && value !== null && value !== undefined && value !== '') {
           const cleanValue = String(value).trim();
-          // Use the question ID as the entry parameter
-          formBody.append(`entry.${field.id}`, cleanValue);
+          formBody.append(field.entryId, cleanValue);
           fieldsFilled++;
         }
       }
@@ -181,26 +298,49 @@ export async function submitToForm(
       if (fieldsFilled === 0) {
         console.log(`  ⚠ Row ${i + 1}: No fields matched - skipping`);
         failCount++;
+        errors.push(`Row ${i + 1}: No fields were mapped`);
         continue;
       }
 
       try {
-        // Submit the form
         const response = await fetch(submitUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
           },
           body: formBody.toString(),
-          redirect: 'manual', // Google Forms redirects on success
+          redirect: 'manual',
         });
 
-        // Check if submission was successful
-        // Google Forms returns 302 redirect on successful submission
-        if (response.status === 302 || response.status === 200) {
-          successCount++;
-          if ((i + 1) % 10 === 0) {
-            console.log(`  Submitted ${i + 1}/${data.length} records...`);
+        // Google Forms returns 302 redirect on success, or 200 with error page
+        if (response.status === 302) {
+          // Check redirect location to confirm success
+          const location = response.headers.get('location');
+          if (location && location.includes('formResponse')) {
+            successCount++;
+            if ((i + 1) % 10 === 0) {
+              console.log(`  Submitted ${i + 1}/${data.length} records...`);
+            }
+          } else {
+            failCount++;
+            errors.push(`Row ${i + 1}: Unexpected redirect to ${location}`);
+          }
+        } else if (response.status === 200) {
+          // Check response body for success confirmation
+          const responseText = await response.text();
+          if (responseText.includes('Your response has been recorded') || 
+              responseText.includes('formResponse') ||
+              responseText.includes('submitted')) {
+            successCount++;
+            if ((i + 1) % 10 === 0) {
+              console.log(`  Submitted ${i + 1}/${data.length} records...`);
+            }
+          } else {
+            failCount++;
+            // Try to extract error message from response
+            const errorMatch = responseText.match(/This is a required question|must be filled out|error/i);
+            const errorMsg = errorMatch ? errorMatch[0] : 'Form validation failed';
+            errors.push(`Row ${i + 1}: ${errorMsg}`);
           }
         } else {
           failCount++;
@@ -226,8 +366,10 @@ export async function submitToForm(
       errors.slice(0, 5).forEach(err => console.log(`  - ${err}`));
     }
 
-    if (failCount > 0) {
-      throw new Error(`${failCount} submissions failed. Check logs for details.`);
+    if (failCount === data.length) {
+      throw new Error('All submissions failed. Please check form URL and ensure form is accessible.');
+    } else if (failCount > 0) {
+      throw new Error(`${failCount} of ${data.length} submissions failed. Check logs for details.`);
     }
   } catch (error: any) {
     console.error('Form submission error:', error);
