@@ -88,21 +88,45 @@ export async function validateForm(formUrl: string): Promise<FormData> {
     
     await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
+    // Save page HTML for debugging
+    const pageContent = await page.content();
+    const fs = await import('fs');
+    await fs.promises.writeFile('/tmp/form-page-source.html', pageContent);
+    console.log('Saved form page source to /tmp/form-page-source.html');
+    
     // Extract form title
     const formTitle = await page.evaluate(() => {
       const titleElement = document.querySelector('[role="heading"]');
       return titleElement?.textContent?.trim() || 'Google Form';
     });
 
-    // Extract form fields - find all inputs with entry.XXX names
+    // Extract form fields - comprehensive search for entry IDs
     const formFields = await page.evaluate(() => {
       const fields: Array<{ title: string; type: string; id: string; required: boolean }> = [];
       
-      // Find all inputs with name starting with "entry."
-      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
+      // Method 1: Look for all input/textarea/select elements
+      const allInputs = document.querySelectorAll('input, textarea, select');
       
-      entryInputs.forEach((input) => {
-        const entryId = input.getAttribute('name') || '';
+      allInputs.forEach((input) => {
+        let entryId = input.getAttribute('name') || '';
+        
+        // Also check data attributes that might contain entry ID
+        if (!entryId || !entryId.includes('entry')) {
+          const dataAttrs = Array.from(input.attributes).filter(attr => 
+            attr.name.includes('entry') || attr.name.includes('data-')
+          );
+          for (const attr of dataAttrs) {
+            if (attr.value && /\d{8,}/.test(attr.value)) {
+              entryId = attr.value;
+              break;
+            }
+          }
+        }
+        
+        // Skip if no entry ID found
+        if (!entryId || (!entryId.includes('entry') && !/^\d{8,}$/.test(entryId))) {
+          return;
+        }
         
         let questionText = '';
         
