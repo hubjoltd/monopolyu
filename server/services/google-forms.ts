@@ -56,6 +56,8 @@ function findMatchingEntryId(
 }
 
 export async function validateForm(formUrl: string): Promise<FormData> {
+  let browser;
+  
   try {
     // Extract form ID from URL
     const formIdMatch = formUrl.match(/\/forms\/d\/e\/([a-zA-Z0-9-_]+)/);
@@ -63,20 +65,145 @@ export async function validateForm(formUrl: string): Promise<FormData> {
       throw new Error("Invalid Google Form URL format");
     }
 
-    // Return basic form structure
-    // Note: Google Forms API doesn't allow reading form structure without edit access
-    // Users need to manually configure field mappings
-    return {
-      title: "Google Form",
-      description: "Configure field mappings in the code to match your form",
-      url: formUrl,
-      fields: [
-        { title: "Form fields need to be configured manually", type: "text", id: "N/A", required: false }
+    console.log(`Validating form and extracting entry IDs...`);
+
+    // Launch Puppeteer browser
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath: '/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer'
       ]
+    });
+
+    const page = await browser.newPage();
+    
+    // Apply saved authentication cookies if available
+    const { googleAuth } = await import('./auth');
+    await googleAuth.applyCookies(page);
+    
+    await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    // Extract form title
+    const formTitle = await page.evaluate(() => {
+      const titleElement = document.querySelector('[role="heading"]');
+      return titleElement?.textContent?.trim() || 'Google Form';
+    });
+
+    // Extract form fields - find all inputs with entry.XXX names
+    const formFields = await page.evaluate(() => {
+      const fields: Array<{ title: string; type: string; id: string; required: boolean }> = [];
+      
+      // Find all inputs with name starting with "entry."
+      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
+      
+      entryInputs.forEach((input) => {
+        const entryId = input.getAttribute('name') || '';
+        
+        let questionText = '';
+        
+        // Method 1: Use aria-label attribute (most reliable for new Google Forms)
+        const ariaLabel = input.getAttribute('aria-label');
+        if (ariaLabel && ariaLabel !== 'null' && ariaLabel.length > 1 && !ariaLabel.toLowerCase().includes('untitled')) {
+          questionText = ariaLabel;
+        }
+        
+        // Method 2: Use aria-labelledby to find the label
+        if (!questionText) {
+          const ariaLabelledBy = input.getAttribute('aria-labelledby');
+          if (ariaLabelledBy) {
+            const labelElement = document.getElementById(ariaLabelledBy);
+            if (labelElement) {
+              const text = labelElement.textContent?.trim() || '';
+              if (text && !text.toLowerCase().includes('untitled')) {
+                questionText = text;
+              }
+            }
+          }
+        }
+        
+        // Method 3: Look for label in parent elements
+        if (!questionText) {
+          let parent = input.parentElement;
+          
+          for (let i = 0; i < 15 && parent; i++) {
+            // Look for div with role="heading"
+            const heading = parent.querySelector('[role="heading"]');
+            if (heading?.textContent) {
+              const text = heading.textContent.trim();
+              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
+                questionText = text;
+                break;
+              }
+            }
+            
+            // Look for common Google Forms classes
+            const labels = Array.from(parent.querySelectorAll('.M7eMe, .freebirdFormviewerComponentsQuestionBaseTitle, .freebirdFormviewerComponentsQuestionBaseHeader'));
+            for (const label of labels) {
+              const text = label.textContent?.trim();
+              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
+                questionText = text;
+                break;
+              }
+            }
+            
+            if (questionText) break;
+            parent = parent.parentElement;
+          }
+        }
+        
+        // Method 4: Use the entry ID as fallback label
+        if (!questionText && entryId) {
+          questionText = `Field ${entryId.replace('entry.', '')}`;
+        }
+        
+        // Check if required
+        const isRequired = input.hasAttribute('required') || input.getAttribute('aria-required') === 'true';
+        
+        if (entryId && questionText) {
+          const type = input.tagName.toLowerCase();
+          fields.push({ 
+            title: questionText, 
+            type, 
+            id: entryId,
+            required: isRequired
+          });
+        }
+      });
+      
+      return fields;
+    });
+
+    await page.close();
+    await browser.close();
+    browser = undefined;
+    
+    console.log(`✓ Detected ${formFields.length} form fields with entry IDs:`);
+    formFields.forEach(field => {
+      console.log(`  - ${field.id}: "${field.title}" (${field.type}${field.required ? ', required' : ''})`);
+    });
+    
+    if (formFields.length === 0) {
+      throw new Error('No form fields with entry IDs were detected. The form may not be accessible or has a different structure.');
+    }
+
+    return {
+      title: formTitle,
+      description: `Detected ${formFields.length} form fields`,
+      url: formUrl,
+      fields: formFields
     };
   } catch (error: any) {
     console.error("Form validation error:", error);
     throw new Error(`Failed to validate form: ${error.message}`);
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 }
 

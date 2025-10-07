@@ -113,16 +113,22 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
                 Detected
               </Badge>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-3">
               <div className="text-sm text-muted-foreground">
                 <span className="mr-2">📋</span>
-                {formData.fields.length} fields detected
+                {formData.fields.length} fields detected with entry IDs
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-col gap-2">
                 {formData.fields.map((field: any, index: number) => (
-                  <Badge key={index} variant="outline" className="text-xs">
-                    {field.title}
-                  </Badge>
+                  <div key={index} className="flex items-center gap-2 p-2 bg-muted/30 rounded-md border border-border/40">
+                    <Badge variant="outline" className="text-xs font-mono shrink-0 bg-primary/5">
+                      {field.id}
+                    </Badge>
+                    <span className="text-sm text-foreground">{field.title}</span>
+                    {field.required && (
+                      <Badge variant="secondary" className="text-xs ml-auto">Required</Badge>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
