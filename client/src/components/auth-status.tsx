@@ -1,10 +1,7 @@
-import { useState } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
-import { LogIn, LogOut, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { CheckCircle, XCircle, Loader2, Info } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface AuthStatus {
   isAuthenticated: boolean;
@@ -13,74 +10,14 @@ interface AuthStatus {
 }
 
 export default function AuthStatus() {
-  const { toast } = useToast();
-
   const { data: authStatus, isLoading } = useQuery<AuthStatus>({
     queryKey: ['/api/auth/status'],
-    refetchInterval: 30000, // Check every 30 seconds
+    refetchInterval: 30000,
   });
-
-  const loginMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/auth/login");
-      return response.json();
-    },
-    onSuccess: (data) => {
-      if (data.success) {
-        toast({
-          title: "Logged in successfully",
-          description: data.email ? `Logged in as ${data.email}` : "You can now access private forms",
-        });
-        queryClient.invalidateQueries({ queryKey: ['/api/auth/status'] });
-      } else {
-        toast({
-          title: "Login failed",
-          description: data.message || "Please try again",
-          variant: "destructive",
-        });
-      }
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Login failed",
-        description: error.message || "An error occurred during login",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const logoutMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/auth/logout");
-      return response.json();
-    },
-    onSuccess: () => {
-      toast({
-        title: "Logged out",
-        description: "You have been logged out successfully",
-      });
-      queryClient.invalidateQueries({ queryKey: ['/api/auth/status'] });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Logout failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const handleLogin = () => {
-    toast({
-      title: "Opening browser window",
-      description: "Please complete the Google sign-in in the browser window that will open. This may take a moment...",
-    });
-    loginMutation.mutate();
-  };
 
   if (isLoading) {
     return (
-      <Card className="slide-up" style={{ animationDelay: '0.4s' }}>
+      <Card className="slide-up" style={{ animationDelay: '0.4s' }} data-testid="card-auth-status">
         <CardHeader className="border-b bg-muted/30">
           <div className="flex items-center gap-3">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -92,18 +29,18 @@ export default function AuthStatus() {
   }
 
   return (
-    <Card className="slide-up" style={{ animationDelay: '0.4s' }}>
+    <Card className="slide-up" style={{ animationDelay: '0.4s' }} data-testid="card-auth-status">
       <CardHeader className="border-b bg-muted/30">
         <div className="flex items-center gap-3">
           {authStatus?.isAuthenticated ? (
-            <CheckCircle className="h-5 w-5 text-green-500" />
+            <CheckCircle className="h-5 w-5 text-green-500" data-testid="icon-authenticated" />
           ) : (
-            <XCircle className="h-5 w-5 text-yellow-500" />
+            <XCircle className="h-5 w-5 text-yellow-500" data-testid="icon-not-authenticated" />
           )}
           <div className="flex-1">
-            <h3 className="text-sm font-semibold">Google Authentication</h3>
+            <h3 className="text-sm font-semibold">Service Account Authentication</h3>
             <p className="text-xs text-muted-foreground">
-              {authStatus?.isAuthenticated ? "Authenticated" : "Required for private forms"}
+              {authStatus?.isAuthenticated ? "Active" : "Not configured"}
             </p>
           </div>
         </div>
@@ -113,37 +50,24 @@ export default function AuthStatus() {
           <div className="space-y-3">
             {authStatus.email && (
               <div className="text-sm">
-                <span className="text-muted-foreground">Signed in as:</span>
-                <p className="font-medium mt-1">{authStatus.email}</p>
+                <span className="text-muted-foreground">Service Account:</span>
+                <p className="font-medium mt-1 break-all" data-testid="text-service-email">{authStatus.email}</p>
               </div>
             )}
-            <Button
-              onClick={() => logoutMutation.mutate()}
-              disabled={logoutMutation.isPending}
-              variant="outline"
-              size="sm"
-              className="w-full"
-              data-testid="button-logout"
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              {logoutMutation.isPending ? "Logging out..." : "Logout"}
-            </Button>
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertDescription className="text-xs">
+                Make sure to share your Google Forms with this service account email to enable automatic submissions.
+              </AlertDescription>
+            </Alert>
           </div>
         ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-muted-foreground">
-              Sign in with Google to access private forms. This is a one-time setup.
-            </p>
-            <Button
-              onClick={handleLogin}
-              disabled={loginMutation.isPending}
-              className="w-full"
-              data-testid="button-login"
-            >
-              <LogIn className="h-4 w-4 mr-2" />
-              {loginMutation.isPending ? "Opening browser..." : "Sign in with Google"}
-            </Button>
-          </div>
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertDescription className="text-xs">
+              Service account not configured. Please add GOOGLE_SERVICE_ACCOUNT_JSON to your environment secrets.
+            </AlertDescription>
+          </Alert>
         )}
       </CardContent>
     </Card>

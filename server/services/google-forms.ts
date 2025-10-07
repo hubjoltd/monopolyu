@@ -1,10 +1,11 @@
-import puppeteer from 'puppeteer';
+import { googleAuth } from './auth';
 
 interface FormField {
   title: string;
   type: string;
   id: string;
   required: boolean;
+  entryId?: string;
 }
 
 interface FormData {
@@ -29,205 +30,66 @@ function normalizeHeader(header: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-// Find matching entry ID for a spreadsheet column
-function findMatchingEntryId(
-  columnName: string,
-  mappings: Record<string, FormFieldMapping>
-): string | null {
-  const normalized = normalizeHeader(columnName);
-  
-  for (const [fieldKey, mapping] of Object.entries(mappings)) {
-    // Check preferred headers first
-    for (const header of mapping.preferredHeaders) {
-      if (normalizeHeader(header) === normalized) {
-        return mapping.entryId;
-      }
-    }
-    
-    // Check synonyms
-    for (const synonym of mapping.synonyms) {
-      if (normalizeHeader(synonym) === normalized || normalized.includes(normalizeHeader(synonym))) {
-        return mapping.entryId;
-      }
-    }
-  }
-  
-  return null;
-}
-
 export async function validateForm(formUrl: string): Promise<FormData> {
-  let browser;
-  
   try {
     // Extract form ID from URL
     const formIdMatch = formUrl.match(/\/forms\/d\/e\/([a-zA-Z0-9-_]+)/);
     if (!formIdMatch) {
-      throw new Error("Invalid Google Form URL format");
+      throw new Error("Invalid Google Form URL format. Please use the form's public URL.");
     }
 
-    console.log(`Validating form and extracting entry IDs...`);
+    const formId = formIdMatch[1];
+    console.log(`Fetching form structure for form ID: ${formId}`);
 
-    // Launch Puppeteer browser
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: '/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-software-rasterizer'
-      ]
+    // Get access token from service account
+    const accessToken = await googleAuth.getAccessToken();
+
+    // Fetch form metadata using Google Forms API
+    const apiUrl = `https://forms.googleapis.com/v1/forms/${formId}`;
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
     });
 
-    const page = await browser.newPage();
-    
-    // Apply saved authentication cookies if available
-    const { googleAuth } = await import('./auth');
-    await googleAuth.applyCookies(page);
-    
-    await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    
-    // Save page HTML for debugging
-    const pageContent = await page.content();
-    const fs = await import('fs');
-    await fs.promises.writeFile('/tmp/form-page-source.html', pageContent);
-    console.log('Saved form page source to /tmp/form-page-source.html');
-    
-    // Extract form title
-    const formTitle = await page.evaluate(() => {
-      const titleElement = document.querySelector('[role="heading"]');
-      return titleElement?.textContent?.trim() || 'Google Form';
-    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Forms API error:', errorText);
+      throw new Error(`Failed to fetch form: ${response.statusText}. Make sure the form is shared with the service account: ${(await googleAuth.getAuthStatus()).email}`);
+    }
 
-    // Extract form fields - comprehensive search for entry IDs
-    const formFields = await page.evaluate(() => {
-      const fields: Array<{ title: string; type: string; id: string; required: boolean }> = [];
-      
-      // Method 1: Look for all input/textarea/select elements
-      const allInputs = document.querySelectorAll('input, textarea, select');
-      
-      allInputs.forEach((input) => {
-        let entryId = input.getAttribute('name') || '';
-        
-        // Also check data attributes that might contain entry ID
-        if (!entryId || !entryId.includes('entry')) {
-          const dataAttrs = Array.from(input.attributes).filter(attr => 
-            attr.name.includes('entry') || attr.name.includes('data-')
-          );
-          for (const attr of dataAttrs) {
-            if (attr.value && /\d{8,}/.test(attr.value)) {
-              entryId = attr.value;
-              break;
-            }
-          }
-        }
-        
-        // Skip if no entry ID found
-        if (!entryId || (!entryId.includes('entry') && !/^\d{8,}$/.test(entryId))) {
-          return;
-        }
-        
-        let questionText = '';
-        
-        // Method 1: Use aria-label attribute (most reliable for new Google Forms)
-        const ariaLabel = input.getAttribute('aria-label');
-        if (ariaLabel && ariaLabel !== 'null' && ariaLabel.length > 1 && !ariaLabel.toLowerCase().includes('untitled')) {
-          questionText = ariaLabel;
-        }
-        
-        // Method 2: Use aria-labelledby to find the label
-        if (!questionText) {
-          const ariaLabelledBy = input.getAttribute('aria-labelledby');
-          if (ariaLabelledBy) {
-            const labelElement = document.getElementById(ariaLabelledBy);
-            if (labelElement) {
-              const text = labelElement.textContent?.trim() || '';
-              if (text && !text.toLowerCase().includes('untitled')) {
-                questionText = text;
-              }
-            }
-          }
-        }
-        
-        // Method 3: Look for label in parent elements
-        if (!questionText) {
-          let parent = input.parentElement;
+    const formData = await response.json();
+
+    // Extract form fields
+    const fields: FormField[] = [];
+    
+    if (formData.items) {
+      for (const item of formData.items) {
+        if (item.questionItem) {
+          const question = item.questionItem.question;
+          const questionId = item.itemId || item.questionItem.question.questionId;
           
-          for (let i = 0; i < 15 && parent; i++) {
-            // Look for div with role="heading"
-            const heading = parent.querySelector('[role="heading"]');
-            if (heading?.textContent) {
-              const text = heading.textContent.trim();
-              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
-                questionText = text;
-                break;
-              }
-            }
-            
-            // Look for common Google Forms classes
-            const labels = Array.from(parent.querySelectorAll('.M7eMe, .freebirdFormviewerComponentsQuestionBaseTitle, .freebirdFormviewerComponentsQuestionBaseHeader'));
-            for (const label of labels) {
-              const text = label.textContent?.trim();
-              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
-                questionText = text;
-                break;
-              }
-            }
-            
-            if (questionText) break;
-            parent = parent.parentElement;
-          }
-        }
-        
-        // Method 4: Use the entry ID as fallback label
-        if (!questionText && entryId) {
-          questionText = `Field ${entryId.replace('entry.', '')}`;
-        }
-        
-        // Check if required
-        const isRequired = input.hasAttribute('required') || input.getAttribute('aria-required') === 'true';
-        
-        if (entryId && questionText) {
-          const type = input.tagName.toLowerCase();
-          fields.push({ 
-            title: questionText, 
-            type, 
-            id: entryId,
-            required: isRequired
+          fields.push({
+            id: questionId,
+            title: item.title || 'Untitled Question',
+            type: Object.keys(question)[0], // e.g., 'textQuestion', 'choiceQuestion', etc.
+            required: question.required || false,
+            entryId: questionId, // Use question ID as entry ID
           });
         }
-      });
-      
-      return fields;
-    });
-
-    await page.close();
-    await browser.close();
-    browser = undefined;
-    
-    console.log(`✓ Detected ${formFields.length} form fields with entry IDs:`);
-    formFields.forEach(field => {
-      console.log(`  - ${field.id}: "${field.title}" (${field.type}${field.required ? ', required' : ''})`);
-    });
-    
-    if (formFields.length === 0) {
-      throw new Error('No form fields with entry IDs were detected. The form may not be accessible or has a different structure.');
+      }
     }
 
     return {
-      title: formTitle,
-      description: `Detected ${formFields.length} form fields`,
+      title: formData.info?.title || 'Google Form',
+      description: formData.info?.description || '',
       url: formUrl,
-      fields: formFields
+      fields,
     };
   } catch (error: any) {
-    console.error("Form validation error:", error);
+    console.error('Form validation error:', error);
     throw new Error(`Failed to validate form: ${error.message}`);
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
   }
 }
 
@@ -236,578 +98,139 @@ export async function submitToForm(
   data: Record<string, any>[],
   mappings?: Record<string, FormFieldMapping>
 ): Promise<void> {
-  let browser;
-  
   try {
-    // Extract form ID from URL
-    const formIdMatch = formUrl.match(/\/forms\/d\/e\/([a-zA-Z0-9-_]+)/);
-    if (!formIdMatch) {
-      throw new Error("Invalid Google Form URL format");
-    }
+    // First, get form structure to understand the fields
+    const formData = await validateForm(formUrl);
+    
+    console.log(`\nForm: ${formData.title}`);
+    console.log(`Found ${formData.fields.length} fields`);
+    console.log(`Submitting ${data.length} records...\n`);
 
-    const formId = formIdMatch[1];
-
-    console.log(`Submitting ${data.length} records using browser automation...`);
-
-    // Launch Puppeteer browser
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: '/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-software-rasterizer'
-      ]
-    });
-
-    // Extract form fields automatically from the first page load
-    const tempPage = await browser.newPage();
-    
-    // Apply saved authentication cookies if available
-    const { googleAuth } = await import('./auth');
-    await googleAuth.applyCookies(tempPage);
-    
-    await tempPage.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    
-    // Save screenshot for debugging
-    await tempPage.screenshot({ path: '/tmp/form-structure.png', fullPage: true });
-    console.log('Form screenshot saved to /tmp/form-structure.png');
-    
-    // Debug: Print detailed form structure analysis
-    const debugInfo = await tempPage.evaluate(() => {
-      const allInputs = document.querySelectorAll('input, textarea, select');
-      const entryFields: any[] = [];
-      
-      allInputs.forEach((input) => {
-        const name = input.getAttribute('name');
-        if (name && name.startsWith('entry.')) {
-          const ariaLabel = input.getAttribute('aria-label');
-          const ariaLabelledBy = input.getAttribute('aria-labelledby');
-          
-          let detectedLabel = '';
-          
-          // Try aria-labelledby
-          if (ariaLabelledBy) {
-            const labelEl = document.getElementById(ariaLabelledBy);
-            if (labelEl) detectedLabel = labelEl.textContent?.trim() || '';
-          }
-          
-          // Try finding parent question container
-          if (!detectedLabel) {
-            let parent = input.parentElement;
-            for (let i = 0; i < 10 && parent; i++) {
-              const heading = parent.querySelector('[role="heading"]');
-              if (heading?.textContent?.trim()) {
-                detectedLabel = heading.textContent.trim();
-                break;
-              }
-              parent = parent.parentElement;
-            }
-          }
-          
-          entryFields.push({
-            name,
-            ariaLabel,
-            ariaLabelledBy,
-            detectedLabel
-          });
-        }
-      });
-      
-      return {
-        totalEntryFields: entryFields.length,
-        fields: entryFields
-      };
-    });
-    console.log('\n=== Form Structure Debug ===');
-    console.log(JSON.stringify(debugInfo, null, 2));
-    console.log('===========================\n');
-    
-    // Extract form fields - find all inputs with entry.XXX names
-    const formFields = await tempPage.evaluate(() => {
-      const fields: Array<{ selector: string; label: string; type: string; entryId: string }> = [];
-      
-      // Find all inputs with name starting with "entry."
-      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
-      
-      entryInputs.forEach((input) => {
-        const entryId = input.getAttribute('name') || '';
-        
-        let questionText = '';
-        
-        // Method 1: Use aria-label attribute (most reliable for new Google Forms)
-        const ariaLabel = input.getAttribute('aria-label');
-        if (ariaLabel && ariaLabel !== 'null' && ariaLabel.length > 1 && !ariaLabel.toLowerCase().includes('untitled')) {
-          questionText = ariaLabel;
-        }
-        
-        // Method 2: Use aria-labelledby to find the label
-        if (!questionText) {
-          const ariaLabelledBy = input.getAttribute('aria-labelledby');
-          if (ariaLabelledBy) {
-            const labelElement = document.getElementById(ariaLabelledBy);
-            if (labelElement) {
-              const text = labelElement.textContent?.trim() || '';
-              if (text && !text.toLowerCase().includes('untitled')) {
-                questionText = text;
-              }
-            }
-          }
-        }
-        
-        // Method 3: Look for label in parent elements
-        if (!questionText) {
-          let parent = input.parentElement;
-          
-          for (let i = 0; i < 15 && parent; i++) {
-            // Look for div with role="heading"
-            const heading = parent.querySelector('[role="heading"]');
-            if (heading?.textContent) {
-              const text = heading.textContent.trim();
-              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
-                questionText = text;
-                break;
-              }
-            }
-            
-            // Look for common Google Forms classes
-            const labels = Array.from(parent.querySelectorAll('.M7eMe, .freebirdFormviewerComponentsQuestionBaseTitle, .freebirdFormviewerComponentsQuestionBaseHeader'));
-            for (const label of labels) {
-              const text = label.textContent?.trim();
-              if (text && text.length > 1 && !text.toLowerCase().includes('untitled')) {
-                questionText = text;
-                break;
-              }
-            }
-            
-            if (questionText) break;
-            parent = parent.parentElement;
-          }
-        }
-        
-        // Method 4: Use the entry ID as fallback label
-        if (!questionText && entryId) {
-          questionText = `Field ${entryId.replace('entry.', '')}`;
-        }
-        
-        if (entryId && questionText) {
-          const selector = `[name="${entryId}"]`;
-          const type = input.tagName.toLowerCase();
-          fields.push({ 
-            selector, 
-            label: questionText, 
-            type, 
-            entryId 
-          });
-        }
-      });
-      
-      return fields;
-    });
-    
-    await tempPage.close();
-    
-    console.log(`\n✓ Auto-detected ${formFields.length} form fields with entry IDs:`);
-    formFields.forEach(field => {
-      console.log(`  - ${field.entryId}: "${field.label}" (${field.type})`);
-    });
-    
-    if (formFields.length === 0) {
-      throw new Error('No form fields with entry IDs were detected. The form may not be accessible or has a different structure.');
-    }
-    
-    // Create automatic mapping from form fields to spreadsheet columns
-    const autoFieldMapping: Record<string, string> = {};
+    // Create automatic mapping from spreadsheet columns to form fields based on labels
     const spreadsheetColumns = data.length > 0 ? Object.keys(data[0]) : [];
+    const fieldMapping: Record<string, FormField> = {};
+
+    console.log('Auto-mapping spreadsheet columns to form fields:');
     
-    console.log('\nMapping spreadsheet columns to form fields:');
-    
-    // First try: exact label matching
-    const unmatchedColumns: string[] = [];
+    // Try exact match first
     for (const column of spreadsheetColumns) {
       const normalizedColumn = normalizeHeader(column);
-      let matched = false;
       
-      for (const field of formFields) {
-        const normalizedLabel = normalizeHeader(field.label);
+      for (const field of formData.fields) {
+        const normalizedFieldTitle = normalizeHeader(field.title);
         
-        if (normalizedColumn === normalizedLabel) {
-          autoFieldMapping[column] = field.selector;
-          console.log(`  ✓ Exact match: "${column}" -> "${field.label}"`);
-          matched = true;
+        if (normalizedColumn === normalizedFieldTitle) {
+          fieldMapping[column] = field;
+          console.log(`  ✓ Exact match: "${column}" -> "${field.title}"`);
           break;
         }
       }
-      
-      if (!matched) {
-        unmatchedColumns.push(column);
-      }
     }
-    
-    // Second try: partial matching for unmatched columns
-    for (const column of unmatchedColumns.slice()) {
+
+    // Try partial match for unmapped columns
+    const unmappedColumns = spreadsheetColumns.filter(col => !fieldMapping[col]);
+    for (const column of unmappedColumns) {
       const normalizedColumn = normalizeHeader(column);
       
-      for (const field of formFields) {
-        if (autoFieldMapping[column]) break; // Already mapped
-        
-        const normalizedLabel = normalizeHeader(field.label);
-        const fieldAlreadyMapped = Object.values(autoFieldMapping).includes(field.selector);
+      for (const field of formData.fields) {
+        const normalizedFieldTitle = normalizeHeader(field.title);
+        const fieldAlreadyMapped = Object.values(fieldMapping).some(f => f.id === field.id);
         
         if (!fieldAlreadyMapped && (
-          normalizedLabel.includes(normalizedColumn) ||
-          normalizedColumn.includes(normalizedLabel)
+          normalizedFieldTitle.includes(normalizedColumn) ||
+          normalizedColumn.includes(normalizedFieldTitle)
         )) {
-          autoFieldMapping[column] = field.selector;
-          console.log(`  ✓ Partial match: "${column}" -> "${field.label}"`);
-          unmatchedColumns.splice(unmatchedColumns.indexOf(column), 1);
+          fieldMapping[column] = field;
+          console.log(`  ✓ Partial match: "${column}" -> "${field.title}"`);
           break;
         }
       }
     }
-    
-    // Third try: map remaining columns by position
-    const unmappedFields = formFields.filter(f => !Object.values(autoFieldMapping).includes(f.selector));
-    for (let i = 0; i < unmatchedColumns.length && i < unmappedFields.length; i++) {
-      const column = unmatchedColumns[i];
-      const field = unmappedFields[i];
-      autoFieldMapping[column] = field.selector;
-      console.log(`  ✓ Mapped by position: "${column}" -> "${field.label}" (${field.entryId})`);
+
+    // Extract form submission endpoint from URL
+    const formIdMatch = formUrl.match(/\/forms\/d\/e\/([a-zA-Z0-9-_]+)/);
+    if (!formIdMatch) {
+      throw new Error("Invalid form URL");
     }
-    
-    // Log any remaining unmatched columns
-    const stillUnmatched = spreadsheetColumns.filter(col => !autoFieldMapping[col]);
-    for (const column of stillUnmatched) {
-      console.log(`  ✗ No match found for "${column}"`);
-    }
-    
-    console.log(`\nStarting submission of ${data.length} records...`);
+    const formId = formIdMatch[1];
+    const submitUrl = `https://docs.google.com/forms/d/e/${formId}/formResponse`;
 
     let successCount = 0;
     let failCount = 0;
     const errors: string[] = [];
 
+    // Submit each record
     for (let i = 0; i < data.length; i++) {
       const record = data[i];
-      const page = await browser.newPage();
-      
-      try {
-        // Navigate to the form
-        await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+      const formBody = new URLSearchParams();
 
-        let fieldsFilled = 0;
+      let fieldsFilled = 0;
 
-        // Fill each field using automatic mapping
-        for (const [columnName, value] of Object.entries(record)) {
-          const fieldSelector = autoFieldMapping[columnName];
-          
-          if (fieldSelector && value !== null && value !== undefined && value !== '') {
-            const cleanValue = String(value).trim();
-            
-            try {
-              await page.waitForSelector(fieldSelector, { timeout: 5000 });
-              
-              // Detect field type and fill accordingly
-              const fieldType = await page.evaluate((selector) => {
-                const element = document.querySelector(selector);
-                if (!element) return null;
-                return {
-                  tagName: element.tagName.toLowerCase(),
-                  type: element.getAttribute('type'),
-                  role: element.getAttribute('role')
-                };
-              }, fieldSelector);
-              
-              if (!fieldType) {
-                if (i === 0) console.log(`  ✗ Field not found: "${columnName}"`);
-                continue;
-              }
-              
-              // Handle different input types
-              if (fieldType.tagName === 'select') {
-                // Dropdown - select by visible text or value
-                const result = await page.evaluate((selector, value) => {
-                  const select = document.querySelector(selector) as HTMLSelectElement;
-                  if (!select) return { success: false, options: [] };
-                  
-                  // Get all available options
-                  const options = Array.from(select.options).map(opt => opt.textContent?.trim() || opt.value);
-                  
-                  // Try to find option by text content
-                  const option = Array.from(select.options).find(opt => 
-                    opt.textContent?.trim().toLowerCase() === value.toLowerCase() ||
-                    opt.value.toLowerCase() === value.toLowerCase()
-                  );
-                  
-                  if (option) {
-                    select.value = option.value;
-                    select.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, options };
-                  }
-                  return { success: false, options };
-                }, fieldSelector, cleanValue);
-                
-                if (result.success) {
-                  fieldsFilled++;
-                  if (i === 0) console.log(`  ✓ Selected "${columnName}" = "${cleanValue}"`);
-                } else if (i === 0) {
-                  console.log(`  ✗ Could not find option "${cleanValue}" for "${columnName}". Available: ${result.options.join(', ')}`);
-                }
-              } else if (fieldType.type === 'radio' || fieldType.role === 'radio' || fieldSelector.includes('_sentinel')) {
-                // Radio button - find and click the one with matching label
-                const result = await page.evaluate((selector, value) => {
-                  const input = document.querySelector(selector) as HTMLInputElement;
-                  if (!input) return { success: false, options: [] };
-                  
-                  // Get the entry name (without _sentinel)
-                  const entryName = input.name.replace('_sentinel', '');
-                  
-                  // Find all radios with this entry name
-                  const radios = Array.from(document.querySelectorAll(`[name="${entryName}"]`)) as HTMLInputElement[];
-                  const options: string[] = [];
-                  
-                  for (const radio of radios) {
-                    // Find associated label
-                    let labelText = '';
-                    const ariaLabel = radio.getAttribute('aria-label');
-                    if (ariaLabel) labelText = ariaLabel;
-                    
-                    if (!labelText && radio.id) {
-                      const label = document.querySelector(`label[for="${radio.id}"]`);
-                      if (label) labelText = label.textContent?.trim() || '';
-                    }
-                    
-                    if (!labelText) {
-                      const parent = radio.closest('[role="radiogroup"], [role="radio"]')?.parentElement;
-                      if (parent) labelText = parent.textContent?.trim() || '';
-                    }
-                    
-                    if (labelText) options.push(labelText);
-                    
-                    if (labelText.toLowerCase().includes(value.toLowerCase()) || 
-                        value.toLowerCase().includes(labelText.toLowerCase())) {
-                      radio.click();
-                      return { success: true, options };
-                    }
-                  }
-                  return { success: false, options };
-                }, fieldSelector, cleanValue);
-                
-                if (result.success) {
-                  fieldsFilled++;
-                  if (i === 0) console.log(`  ✓ Clicked radio "${columnName}" = "${cleanValue}"`);
-                } else if (i === 0) {
-                  console.log(`  ✗ Could not find radio option "${cleanValue}" for "${columnName}". Available: ${result.options.join(', ')}`);
-                }
-              } else if (fieldType.type === 'checkbox') {
-                // Checkbox - check if value indicates it should be checked
-                const shouldCheck = ['yes', 'true', '1', 'checked', cleanValue.toLowerCase()].includes(cleanValue.toLowerCase());
-                if (shouldCheck) {
-                  await page.click(fieldSelector);
-                  fieldsFilled++;
-                  if (i === 0) console.log(`  ✓ Checked "${columnName}"`);
-                }
-              } else {
-                // Text input or textarea - use direct value assignment with proper events
-                const filled = await page.evaluate((selector, value) => {
-                  const element = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
-                  if (!element) return false;
-                  
-                  // Focus the element first
-                  element.focus();
-                  
-                  // Clear and set value
-                  element.value = '';
-                  element.value = value;
-                  
-                  // Trigger all necessary events for Google Forms to recognize the input
-                  element.dispatchEvent(new Event('input', { bubbles: true }));
-                  element.dispatchEvent(new Event('change', { bubbles: true }));
-                  element.dispatchEvent(new Event('blur', { bubbles: true }));
-                  
-                  // Verify value was set
-                  return element.value === value;
-                }, fieldSelector, cleanValue);
-                
-                if (filled) {
-                  fieldsFilled++;
-                  if (i === 0) console.log(`  ✓ Filled "${columnName}" = "${cleanValue}"`);
-                } else if (i === 0) {
-                  console.log(`  ✗ Failed to fill "${columnName}"`);
-                }
-              }
-            } catch (selectorError) {
-              if (i === 0) {
-                console.log(`  ✗ Error filling "${columnName}": ${selectorError}`);
-              }
-            }
-          }
+      // Fill form data based on mapping
+      for (const [columnName, value] of Object.entries(record)) {
+        const field = fieldMapping[columnName];
+        
+        if (field && value !== null && value !== undefined && value !== '') {
+          const cleanValue = String(value).trim();
+          // Use the question ID as the entry parameter
+          formBody.append(`entry.${field.id}`, cleanValue);
+          fieldsFilled++;
         }
+      }
 
-        if (fieldsFilled === 0) {
-          errors.push(`Row ${i + 1}: No fields were filled`);
-          failCount++;
-          await page.close();
-          continue;
-        }
-
-        // Wait for Google Forms to process all inputs
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        // Click submit button - try multiple approaches
-        let submitClicked = false;
-        
-        try {
-          // Method 1: Try standard submit button
-          const submitButton = await page.$('[type="submit"]');
-          if (submitButton) {
-            await submitButton.click();
-            submitClicked = true;
-            if (i === 0) console.log(`  Clicked submit: [type="submit"]`);
-          }
-        } catch (e) {}
-        
-        if (!submitClicked) {
-          try {
-            // Method 2: Look for div with role="button" containing "Submit" text
-            const buttons = await page.$$('div[role="button"]');
-            for (const button of buttons) {
-              const text = await page.evaluate(el => el.textContent, button);
-              if (text && text.toLowerCase().includes('submit')) {
-                await button.click();
-                submitClicked = true;
-                if (i === 0) console.log(`  Clicked submit: div[role="button"] with "Submit" text`);
-                break;
-              }
-            }
-          } catch (e) {}
-        }
-        
-        if (!submitClicked) {
-          try {
-            // Method 3: Click via JavaScript evaluation
-            submitClicked = await page.evaluate(() => {
-              const elements = Array.from(document.querySelectorAll('span, div[role="button"]'));
-              for (const el of elements) {
-                if (el.textContent?.toLowerCase().includes('submit')) {
-                  (el as HTMLElement).click();
-                  return true;
-                }
-              }
-              return false;
-            });
-            if (submitClicked && i === 0) console.log(`  Clicked submit: JavaScript evaluate`);
-          } catch (e) {}
-        }
-        
-        if (!submitClicked) {
-          try {
-            // Method 4: Try Google Forms specific class
-            const gfButton = await page.$('.freebirdFormviewerViewNavigationSubmitButton');
-            if (gfButton) {
-              await gfButton.click();
-              submitClicked = true;
-              if (i === 0) console.log(`  Clicked submit: Google Forms class`);
-            }
-          } catch (e) {}
-        }
-        
-        if (!submitClicked) {
-          errors.push(`Row ${i + 1}: Could not find submit button`);
-          failCount++;
-          if (i === 0) {
-            // Take screenshot to debug
-            await page.screenshot({ path: '/tmp/form-debug.png' });
-            console.log(`  Screenshot saved to /tmp/form-debug.png for debugging`);
-          }
-          await page.close();
-          continue;
-        }
-        
-        // Wait for submission to complete - try navigation first
-        const navigationPromise = page.waitForNavigation({ timeout: 15000 }).catch(() => null);
-        await navigationPromise;
-        
-        // Additional wait for form to process
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        // Check if we reached the confirmation page
-        const url = page.url();
-        let submissionConfirmed = false;
-        
-        if (url.includes('/formResponse') || url.includes('submitted')) {
-          submissionConfirmed = true;
-          if (i === 0) {
-            console.log(`  ✓ Successfully submitted (redirected to ${url})`);
-          }
-        } else {
-          // Check for confirmation text on page
-          const bodyText = await page.evaluate(() => document.body.innerText);
-          const confirmationTexts = [
-            'your response has been recorded',
-            'thank you',
-            'response recorded',
-            'submitted',
-            'thanks for',
-            'we have received'
-          ];
-          
-          const hasConfirmation = confirmationTexts.some(text => 
-            bodyText.toLowerCase().includes(text)
-          );
-          
-          if (hasConfirmation) {
-            submissionConfirmed = true;
-            if (i === 0) {
-              console.log(`  ✓ Successfully submitted (found confirmation text)`);
-            }
-          }
-        }
-        
-        if (submissionConfirmed) {
-          successCount++;
-        } else {
-          errors.push(`Row ${i + 1}: Form did not confirm submission (URL: ${url})`);
-          failCount++;
-          
-          if (i === 0) {
-            await page.screenshot({ path: '/tmp/form-no-confirmation.png' });
-            console.log(`  Screenshot saved for debugging: /tmp/form-no-confirmation.png`);
-          }
-        }
-
-        await page.close();
-
-        // Rate limiting
-        if (i < data.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-        
-      } catch (recordError: any) {
-        errors.push(`Row ${i + 1}: ${recordError.message}`);
+      if (fieldsFilled === 0) {
+        console.log(`  ⚠ Row ${i + 1}: No fields matched - skipping`);
         failCount++;
-        await page.close().catch(() => {});
+        continue;
+      }
+
+      try {
+        // Submit the form
+        const response = await fetch(submitUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: formBody.toString(),
+          redirect: 'manual', // Google Forms redirects on success
+        });
+
+        // Check if submission was successful
+        // Google Forms returns 302 redirect on successful submission
+        if (response.status === 302 || response.status === 200) {
+          successCount++;
+          if ((i + 1) % 10 === 0) {
+            console.log(`  Submitted ${i + 1}/${data.length} records...`);
+          }
+        } else {
+          failCount++;
+          errors.push(`Row ${i + 1}: Unexpected response status ${response.status}`);
+        }
+      } catch (error: any) {
+        failCount++;
+        errors.push(`Row ${i + 1}: ${error.message}`);
+      }
+
+      // Small delay to avoid rate limiting
+      if (i < data.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
-    console.log(`✓ Submission complete: ${successCount} successful, ${failCount} failed out of ${data.length} total`);
-    
-    if (errors.length > 0 && errors.length <= 10) {
-      console.log('Errors:', errors.join('; '));
+    console.log(`\n✓ Submission complete:`);
+    console.log(`  Success: ${successCount}`);
+    console.log(`  Failed: ${failCount}`);
+
+    if (errors.length > 0) {
+      console.log(`\nErrors (showing first 5):`);
+      errors.slice(0, 5).forEach(err => console.log(`  - ${err}`));
     }
-    
-    if (successCount === 0 && data.length > 0) {
-      throw new Error(`No records were successfully submitted. ${errors[0] || 'Browser automation failed.'}`);
+
+    if (failCount > 0) {
+      throw new Error(`${failCount} submissions failed. Check logs for details.`);
     }
-    
   } catch (error: any) {
-    console.error("Form submission error:", error);
+    console.error('Form submission error:', error);
     throw new Error(`Failed to submit to form: ${error.message}`);
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
   }
 }
