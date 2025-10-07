@@ -96,6 +96,9 @@ export async function validateForm(formUrl: string): Promise<FormData> {
     const page = await browser.newPage();
     await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
+    // Wait for form to fully load
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
     // Extract form title
     const formTitle = await page.evaluate(() => {
       const titleElement = document.querySelector('[role="heading"]');
@@ -105,20 +108,57 @@ export async function validateForm(formUrl: string): Promise<FormData> {
     // Extract entry IDs and labels from HTML
     const htmlFields = await page.evaluate(() => {
       const fields: Array<{ entryId: string; label: string; type: string }> = [];
-      const entryInputs = document.querySelectorAll('input[name^="entry."], textarea[name^="entry."], select[name^="entry."]');
       
-      entryInputs.forEach((input) => {
-        const entryId = input.getAttribute('name') || '';
-        if (!entryId) return;
+      // Try multiple selectors for different Google Forms formats
+      const selectors = [
+        'input[name^="entry."]',
+        'textarea[name^="entry."]', 
+        'select[name^="entry."]',
+        'input[data-initial-value]', // Some newer forms use this
+        'input[aria-label]:not([type="hidden"])',
+        'textarea[aria-label]'
+      ];
+      
+      const allInputs: Element[] = [];
+      selectors.forEach(selector => {
+        document.querySelectorAll(selector).forEach(el => {
+          if (!allInputs.includes(el)) {
+            allInputs.push(el);
+          }
+        });
+      });
+      
+      console.log(`Found ${allInputs.length} potential input elements`);
+      
+      allInputs.forEach((input) => {
+        // Extract entry ID from various attributes
+        let entryId = input.getAttribute('name') || '';
+        
+        // If no name attribute, try to extract from data attributes
+        if (!entryId || !entryId.startsWith('entry.')) {
+          const dataAttrs = Array.from(input.attributes);
+          for (const attr of dataAttrs) {
+            if (attr.name.includes('entry') || (attr.value && attr.value.match(/^entry\.\d+$/))) {
+              entryId = attr.value;
+              break;
+            }
+          }
+        }
+        
+        // Skip if no valid entry ID found
+        if (!entryId || (!entryId.startsWith('entry.') && !entryId.match(/^\d{9,}$/))) {
+          return;
+        }
         
         let questionText = '';
         
-        // Try multiple methods to get the label
+        // Method 1: aria-label
         const ariaLabel = input.getAttribute('aria-label');
         if (ariaLabel && ariaLabel.length > 1 && !ariaLabel.toLowerCase().includes('untitled')) {
           questionText = ariaLabel;
         }
         
+        // Method 2: aria-labelledby
         if (!questionText) {
           const ariaLabelledBy = input.getAttribute('aria-labelledby');
           if (ariaLabelledBy) {
@@ -129,6 +169,7 @@ export async function validateForm(formUrl: string): Promise<FormData> {
           }
         }
         
+        // Method 3: Look in parent elements for heading/label
         if (!questionText) {
           let parent = input.parentElement;
           for (let i = 0; i < 15 && parent; i++) {
@@ -144,12 +185,18 @@ export async function validateForm(formUrl: string): Promise<FormData> {
           }
         }
         
+        // Ensure we have entry.* format
+        if (!entryId.startsWith('entry.')) {
+          entryId = `entry.${entryId}`;
+        }
+        
         if (questionText || entryId) {
           fields.push({
             entryId,
             label: questionText || entryId,
             type: input.tagName.toLowerCase()
           });
+          console.log(`Extracted field: ${entryId} -> ${questionText || 'no label'}`);
         }
       });
       
