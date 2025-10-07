@@ -21,28 +21,23 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
 
   const validateFormMutation = useMutation({
     mutationFn: async (url: string) => {
-      const response = await apiRequest("POST", "/api/forms/validate", { url });
+      const response = await apiRequest("POST", "/api/response-sheet/validate", { url });
       return response.json();
     },
     onSuccess: (data) => {
       setFormData(data);
       toast({
-        title: "Form validated successfully",
-        description: `Found ${data.fields.length} fields in the form`,
+        title: "Response sheet validated successfully",
+        description: `Found ${data.fields.length} columns in the spreadsheet`,
       });
     },
     onError: (error: any) => {
-      // Still set basic form data even on validation failure
-      setFormData({
-        url: formUrl,
-        title: "Google Form",
-        description: "Auto-detection failed, but you can proceed with submission",
-        fields: []
-      });
       toast({
-        title: "Could not auto-detect form fields",
-        description: "You can still proceed with submission - the system will attempt to map fields automatically",
+        title: "Could not access response sheet",
+        description: "Make sure the spreadsheet is shared with the service account",
+        variant: "destructive",
       });
+      setFormData(null);
     },
     onSettled: () => {
       setIsValidating(false);
@@ -51,7 +46,7 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
 
   const handleUrlChange = (value: string) => {
     setFormUrl(value);
-    if (value && value.includes('docs.google.com/forms')) {
+    if (value && value.includes('docs.google.com/spreadsheets')) {
       setIsValidating(true);
       validateFormMutation.mutate(value);
     } else {
@@ -67,8 +62,8 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
             <ClipboardList className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h2 className="text-xl font-semibold text-foreground">Select Target Form</h2>
-            <p className="text-sm text-muted-foreground">Choose the Google Form to submit data to</p>
+            <h2 className="text-xl font-semibold text-foreground">Select Response Spreadsheet</h2>
+            <p className="text-sm text-muted-foreground">Provide the URL of your form's response spreadsheet</p>
           </div>
         </div>
       </CardHeader>
@@ -76,11 +71,11 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
         <div>
           <Label className="flex items-center gap-2 text-sm font-medium text-foreground mb-2">
             <Link className="h-4 w-4 text-primary" />
-            Google Form URL
+            Response Spreadsheet URL
           </Label>
           <Input
             type="url"
-            placeholder="https://docs.google.com/forms/d/..."
+            placeholder="https://docs.google.com/spreadsheets/d/..."
             value={formUrl}
             onChange={(e) => handleUrlChange(e.target.value)}
             className="transition-all"
@@ -94,7 +89,7 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
             <div className="flex-1">
               <h3 className="font-medium text-foreground mb-1">Quick Tip</h3>
               <p className="text-sm text-muted-foreground">
-                Paste the Google Form URL from your browser. The form must be publicly accessible or shared with you.
+                Paste your form's response spreadsheet URL. Open your Google Form → Responses → View in Sheets, then copy that URL. Share it with: <code className="text-xs bg-muted px-1 py-0.5 rounded">form-submit@winged-quanta-474406-u4.iam.gserviceaccount.com</code>
               </p>
             </div>
           </div>
@@ -122,7 +117,7 @@ export default function FormSelection({ formUrl, setFormUrl, formData, setFormDa
             <div className="space-y-3">
               <div className="text-sm text-muted-foreground">
                 <span className="mr-2">📋</span>
-                {formData.fields.length} fields detected with entry IDs
+                {formData.fields.length} columns detected in response sheet
               </div>
               <div className="flex flex-col gap-2">
                 {formData.fields.map((field: any, index: number) => (

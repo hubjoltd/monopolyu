@@ -5,6 +5,7 @@ import { storage } from "./storage";
 import { parseSheet } from "./services/sheet-parser";
 import { validateForm, submitToForm } from "./services/google-forms";
 import { googleAuth } from "./services/auth";
+import { writeToSheet, getSheetHeaders } from "./services/sheets-writer";
 import { insertSubmissionSchema, insertBatchSchema } from "@shared/schema";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -15,7 +16,7 @@ const upload = multer({
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Validate Google Form
+  // Validate Google Form (deprecated - use response sheet instead)
   app.post("/api/forms/validate", async (req, res) => {
     try {
       const { url } = req.body;
@@ -28,6 +29,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Form validation error:", error);
       res.status(400).json({ message: error.message || "Failed to validate form" });
+    }
+  });
+
+  // Validate Response Sheet (new approach)
+  app.post("/api/response-sheet/validate", async (req, res) => {
+    try {
+      const { url } = req.body;
+      if (!url) {
+        return res.status(400).json({ message: "Response sheet URL is required" });
+      }
+
+      const sheetInfo = await getSheetHeaders(url);
+      res.json({
+        title: "Response Spreadsheet",
+        description: `Spreadsheet with ${sheetInfo.headers.length} columns`,
+        url,
+        fields: sheetInfo.headers.map((header, index) => ({
+          id: String(index),
+          title: header,
+          type: 'text',
+          required: false,
+          entryId: String(index),
+        })),
+      });
+    } catch (error: any) {
+      console.error("Response sheet validation error:", error);
+      res.status(400).json({ message: error.message || "Failed to validate response sheet" });
     }
   });
 
@@ -200,8 +228,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: 'processing',
         });
 
-        // Submit batch to Google Forms
-        await submitToForm(submission.formUrl, batchData);
+        // Write batch to response sheet
+        await writeToSheet(submission.formUrl, batchData);
 
         // Update batch status
         await storage.updateBatchStatus(batch.id, 'completed');
