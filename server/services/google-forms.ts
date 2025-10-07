@@ -131,6 +131,30 @@ export async function validateForm(formUrl: string): Promise<FormData> {
       }
     }
     
+    // Try to extract form data from JavaScript
+    const formDataFromJS = await page.evaluate(() => {
+      try {
+        // Google Forms stores data in FB_PUBLIC_LOAD_DATA_ variable
+        const scripts = Array.from(document.querySelectorAll('script'));
+        for (const script of scripts) {
+          const text = script.textContent || '';
+          
+          // Look for FB_PUBLIC_LOAD_DATA
+          if (text.includes('FB_PUBLIC_LOAD_DATA_')) {
+            const match = text.match(/FB_PUBLIC_LOAD_DATA_\s*=\s*(\[[\s\S]*?\]);/);
+            if (match) {
+              return { found: true, data: match[1].substring(0, 500) };
+            }
+          }
+        }
+        return { found: false };
+      } catch (e) {
+        return { found: false, error: String(e) };
+      }
+    });
+    
+    console.log('JavaScript form data extraction:', formDataFromJS);
+    
     // Extract form title
     const formTitle = await page.evaluate(() => {
       const titleElement = document.querySelector('[role="heading"]');
