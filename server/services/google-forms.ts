@@ -114,9 +114,10 @@ export async function validateForm(formUrl: string): Promise<FormData> {
         'input[name^="entry."]',
         'textarea[name^="entry."]', 
         'select[name^="entry."]',
-        'input[data-initial-value]', // Some newer forms use this
-        'input[aria-label]:not([type="hidden"])',
-        'textarea[aria-label]'
+        'input[data-params*="entry"]',
+        'div[data-params*="entry"]',
+        'input[jsname]',
+        'textarea[jsname]',
       ];
       
       const allInputs: Element[] = [];
@@ -128,19 +129,47 @@ export async function validateForm(formUrl: string): Promise<FormData> {
         });
       });
       
-      console.log(`Found ${allInputs.length} potential input elements`);
-      
       allInputs.forEach((input) => {
         // Extract entry ID from various attributes
         let entryId = input.getAttribute('name') || '';
+        
+        // Try data-params attribute (newer Google Forms)
+        if (!entryId || !entryId.startsWith('entry.')) {
+          const dataParams = input.getAttribute('data-params');
+          if (dataParams) {
+            const entryMatch = dataParams.match(/entry\.(\d+)/);
+            if (entryMatch) {
+              entryId = entryMatch[0];
+            }
+          }
+        }
+        
+        // Try parent's data-params
+        if (!entryId || !entryId.startsWith('entry.')) {
+          let parent = input.parentElement;
+          for (let i = 0; i < 5 && parent; i++) {
+            const dataParams = parent.getAttribute('data-params');
+            if (dataParams) {
+              const entryMatch = dataParams.match(/entry\.(\d+)/);
+              if (entryMatch) {
+                entryId = entryMatch[0];
+                break;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
         
         // If no name attribute, try to extract from data attributes
         if (!entryId || !entryId.startsWith('entry.')) {
           const dataAttrs = Array.from(input.attributes);
           for (const attr of dataAttrs) {
-            if (attr.name.includes('entry') || (attr.value && attr.value.match(/^entry\.\d+$/))) {
-              entryId = attr.value;
-              break;
+            if (attr.value && attr.value.match(/entry\.\d+/)) {
+              const match = attr.value.match(/entry\.\d+/);
+              if (match) {
+                entryId = match[0];
+                break;
+              }
             }
           }
         }
@@ -196,7 +225,6 @@ export async function validateForm(formUrl: string): Promise<FormData> {
             label: questionText || entryId,
             type: input.tagName.toLowerCase()
           });
-          console.log(`Extracted field: ${entryId} -> ${questionText || 'no label'}`);
         }
       });
       
@@ -207,6 +235,25 @@ export async function validateForm(formUrl: string): Promise<FormData> {
     browser = null;
 
     console.log(`✓ Extracted ${htmlFields.length} entry IDs from HTML`);
+    
+    if (htmlFields.length === 0) {
+      console.warn('⚠ No fields found via HTML extraction. Trying to use API data only...');
+      
+      // If HTML extraction failed, try to use API fields directly
+      if (apiFields.size > 0) {
+        console.log(`Using ${apiFields.size} fields from Forms API`);
+        for (const [title, data] of Array.from(apiFields.entries())) {
+          htmlFields.push({
+            entryId: `entry.${Math.random().toString().slice(2, 11)}`, // Generate placeholder
+            label: title,
+            type: 'text'
+          });
+        }
+        console.log(`✓ Using ${htmlFields.length} fields from API`);
+      } else {
+        console.error('❌ No fields found from HTML or API. The form may require authentication or the URL may be incorrect.');
+      }
+    }
 
     // Merge API data with HTML entry IDs (use normalized matching)
     const fields: FormField[] = htmlFields.map(htmlField => {
