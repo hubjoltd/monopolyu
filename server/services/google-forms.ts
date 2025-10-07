@@ -97,7 +97,20 @@ export async function validateForm(formUrl: string): Promise<FormData> {
     await page.goto(formUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
     // Wait for form to fully load
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Debug: Save page HTML for inspection
+    const pageContent = await page.content();
+    console.log('Page loaded, HTML length:', pageContent.length);
+    
+    // Debug: Check for entry patterns in HTML
+    const entryMatches = pageContent.match(/entry\.\d+/g);
+    if (entryMatches) {
+      const uniqueEntries = Array.from(new Set(entryMatches));
+      console.log(`Found ${entryMatches.length} entry patterns in HTML:`, uniqueEntries);
+    } else {
+      console.log('No entry.* patterns found in HTML');
+    }
     
     // Extract form title
     const formTitle = await page.evaluate(() => {
