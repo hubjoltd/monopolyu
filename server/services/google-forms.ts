@@ -110,6 +110,25 @@ export async function validateForm(formUrl: string): Promise<FormData> {
       console.log(`Found ${entryMatches.length} entry patterns in HTML:`, uniqueEntries);
     } else {
       console.log('No entry.* patterns found in HTML');
+      
+      // Check for alternative patterns
+      const fbPatterns = pageContent.match(/\[\d+,\[\[\d+/g);
+      if (fbPatterns) {
+        console.log('Found FB patterns (new Google Forms format):', fbPatterns.length);
+      }
+      
+      // Check for data-params
+      const dataParams = pageContent.match(/data-params="[^"]*"/g);
+      if (dataParams && dataParams.length > 0) {
+        console.log('Found data-params attributes:', dataParams.slice(0, 3));
+      }
+      
+      // Check for name attributes
+      const nameAttrs = pageContent.match(/name="[^"]*"/g);
+      if (nameAttrs) {
+        const unique = Array.from(new Set(nameAttrs)).slice(0, 10);
+        console.log('Found name attributes:', unique);
+      }
     }
     
     // Extract form title
